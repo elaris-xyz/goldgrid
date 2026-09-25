@@ -12,3 +12,9 @@ keys/
 
 # local devnet run state
 cli/devnet-state.json
+
+# Android: local SDK path and build output
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
