@@ -1,0 +1,1231 @@
+{
+  "address": "8X7udAY9fwDU1HY4gWGHvEQahZX6RYfoNYCx8UovxjNQ",
+  "metadata": {
+    "name": "daily_draw",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Free nightly draw for Seeker owners: pick 5 of 85, Switchboard picks the winners"
+  },
+  "instructions": [
+    {
+      "name": "claim",
+      "discriminator": [
+        62,
+        198,
+        214,
+        193,
+        213,
+        159,
+        108,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "ticket"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "round",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticket",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_tokens",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "round_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "commit_draw",
+      "docs": [
+        "Binds the round to a Switchboard randomness account committed in this",
+        "same transaction, after entries closed: nobody could know the result",
+        "while they could still enter. Anyone may call it."
+      ],
+      "discriminator": [
+        210,
+        106,
+        32,
+        68,
+        253,
+        95,
+        229,
+        1
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "randomness"
+        }
+      ],
+      "args": [
+        {
+          "name": "round_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "enter",
+      "discriminator": [
+        139,
+        49,
+        209,
+        114,
+        88,
+        91,
+        77,
+        134
+      ],
+      "accounts": [
+        {
+          "name": "player",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "identity"
+        },
+        {
+          "name": "sgt_tokens",
+          "docs": [
+            "The player's token account holding the SGT; required when the config demands one."
+          ],
+          "optional": true
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seeker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  101,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "identity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticket",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "round_id",
+          "type": "u64"
+        },
+        {
+          "name": "index",
+          "type": "u8"
+        },
+        {
+          "name": "picks",
+          "type": {
+            "array": [
+              "u8",
+              5
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "fund",
+      "docs": [
+        "A sponsor adds SKR. Each ticket then moves `per_ticket_bonus` of it into",
+        "that night's pot, so the pot grows in front of everyone as people enter."
+      ],
+      "discriminator": [
+        218,
+        188,
+        111,
+        221,
+        152,
+        113,
+        174,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "sponsor",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "sponsor_tokens",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "InitParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reveal_draw",
+      "docs": [
+        "Reads the revealed value in the same transaction as Switchboard's reveal",
+        "and turns it into the winning numbers. Anyone may call it."
+      ],
+      "discriminator": [
+        13,
+        149,
+        75,
+        226,
+        184,
+        105,
+        114,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "randomness"
+        }
+      ],
+      "args": [
+        {
+          "name": "round_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "score_tickets",
+      "docs": [
+        "Scores any number of the round's tickets passed as remaining accounts.",
+        "When the last one is scored the round settles: the best match splits the",
+        "pot, and a night where nobody matched anything rolls it to the next one."
+      ],
+      "discriminator": [
+        103,
+        200,
+        39,
+        123,
+        1,
+        209,
+        240,
+        97
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "round_id",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Round",
+      "discriminator": [
+        87,
+        127,
+        165,
+        51,
+        73,
+        78,
+        116,
+        174
+      ]
+    },
+    {
+      "name": "Seeker",
+      "discriminator": [
+        106,
+        201,
+        97,
+        118,
+        1,
+        110,
+        224,
+        133
+      ]
+    },
+    {
+      "name": "Ticket",
+      "discriminator": [
+        41,
+        228,
+        24,
+        165,
+        78,
+        90,
+        235,
+        200
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Claimed",
+      "discriminator": [
+        217,
+        192,
+        123,
+        72,
+        108,
+        150,
+        248,
+        33
+      ]
+    },
+    {
+      "name": "DrawCommitted",
+      "discriminator": [
+        228,
+        156,
+        123,
+        212,
+        154,
+        211,
+        83,
+        218
+      ]
+    },
+    {
+      "name": "DrawRevealed",
+      "discriminator": [
+        255,
+        27,
+        67,
+        160,
+        9,
+        247,
+        91,
+        185
+      ]
+    },
+    {
+      "name": "Entered",
+      "discriminator": [
+        247,
+        164,
+        21,
+        222,
+        219,
+        178,
+        237,
+        160
+      ]
+    },
+    {
+      "name": "Funded",
+      "discriminator": [
+        67,
+        84,
+        56,
+        88,
+        192,
+        12,
+        201,
+        177
+      ]
+    },
+    {
+      "name": "RoundSettled",
+      "discriminator": [
+        249,
+        225,
+        66,
+        54,
+        157,
+        200,
+        234,
+        222
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "BadConfig",
+      "msg": "Round length and entry window must be positive, with entries closing before the draw"
+    },
+    {
+      "code": 6001,
+      "name": "ZeroAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6002,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6003,
+      "name": "NotCurrentRound",
+      "msg": "Tickets can only be entered for the current round"
+    },
+    {
+      "code": 6004,
+      "name": "EntriesClosed",
+      "msg": "Entries for this round are closed"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidPicks",
+      "msg": "Pick 5 different numbers from 1 to 85"
+    },
+    {
+      "code": 6006,
+      "name": "NotASeeker",
+      "msg": "A Seeker Genesis Token held by this wallet is required"
+    },
+    {
+      "code": 6007,
+      "name": "WrongTicketIndex",
+      "msg": "Ticket index must be the next free one for this Seeker"
+    },
+    {
+      "code": 6008,
+      "name": "TicketLimit",
+      "msg": "No tickets left for this Seeker in this round"
+    },
+    {
+      "code": 6009,
+      "name": "WrongStatus",
+      "msg": "The round is not in the right state for this"
+    },
+    {
+      "code": 6010,
+      "name": "TooEarly",
+      "msg": "The draw time has not come yet"
+    },
+    {
+      "code": 6011,
+      "name": "BadRandomness",
+      "msg": "Randomness account is not the expected Switchboard account"
+    },
+    {
+      "code": 6012,
+      "name": "StaleCommit",
+      "msg": "Randomness must be committed in the same transaction"
+    },
+    {
+      "code": 6013,
+      "name": "NotRevealed",
+      "msg": "Randomness is not revealed in this slot"
+    },
+    {
+      "code": 6014,
+      "name": "BadTicket",
+      "msg": "Ticket does not belong to this round"
+    },
+    {
+      "code": 6015,
+      "name": "NotAWinner",
+      "msg": "This ticket did not win"
+    },
+    {
+      "code": 6016,
+      "name": "AlreadyClaimed",
+      "msg": "Already claimed"
+    }
+  ],
+  "types": [
+    {
+      "name": "Claimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "genesis_ts",
+            "type": "i64"
+          },
+          {
+            "name": "round_secs",
+            "type": "i64"
+          },
+          {
+            "name": "entry_secs",
+            "type": "i64"
+          },
+          {
+            "name": "per_ticket_bonus",
+            "type": "u64"
+          },
+          {
+            "name": "sponsor_budget",
+            "type": "u64"
+          },
+          {
+            "name": "carry",
+            "docs": [
+              "Pot waiting for the next round: nights nobody matched, and division dust."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "require_sgt",
+            "type": "bool"
+          },
+          {
+            "name": "sgt_group",
+            "type": "pubkey"
+          },
+          {
+            "name": "sb_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "sb_queue",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DrawCommitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "randomness",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DrawRevealed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "winning",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          },
+          {
+            "name": "tickets",
+            "type": "u32"
+          },
+          {
+            "name": "pot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Entered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "picks",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          },
+          {
+            "name": "pot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Funded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "sponsor",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "genesis_ts",
+            "type": "i64"
+          },
+          {
+            "name": "round_secs",
+            "type": "i64"
+          },
+          {
+            "name": "entry_secs",
+            "type": "i64"
+          },
+          {
+            "name": "per_ticket_bonus",
+            "type": "u64"
+          },
+          {
+            "name": "require_sgt",
+            "type": "bool"
+          },
+          {
+            "name": "sgt_group",
+            "type": "pubkey"
+          },
+          {
+            "name": "sb_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "sb_queue",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Round",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": "u64"
+          },
+          {
+            "name": "close_ts",
+            "type": "i64"
+          },
+          {
+            "name": "draw_ts",
+            "type": "i64"
+          },
+          {
+            "name": "pot",
+            "type": "u64"
+          },
+          {
+            "name": "tickets",
+            "type": "u32"
+          },
+          {
+            "name": "scored",
+            "type": "u32"
+          },
+          {
+            "name": "best",
+            "type": "u8"
+          },
+          {
+            "name": "winners",
+            "type": "u32"
+          },
+          {
+            "name": "share",
+            "type": "u64"
+          },
+          {
+            "name": "randomness",
+            "type": "pubkey"
+          },
+          {
+            "name": "winning",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "RoundStatus"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RoundSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "best",
+            "type": "u8"
+          },
+          {
+            "name": "winners",
+            "type": "u32"
+          },
+          {
+            "name": "share",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RoundStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Committed"
+          },
+          {
+            "name": "Revealed"
+          },
+          {
+            "name": "Settled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Seeker",
+      "docs": [
+        "One per Seeker (per SGT; per wallet in demo mode): the streak that earns tickets."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "entered",
+            "type": "bool"
+          },
+          {
+            "name": "last_round",
+            "type": "u64"
+          },
+          {
+            "name": "streak",
+            "type": "u32"
+          },
+          {
+            "name": "tickets_in_round",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Ticket",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity",
+            "type": "pubkey"
+          },
+          {
+            "name": "picks",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          },
+          {
+            "name": "matches",
+            "type": "u8"
+          },
+          {
+            "name": "claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

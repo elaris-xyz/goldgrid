@@ -1,0 +1,16 @@
+{
+  "name": "daily-draw-cli",
+  "private": true,
+  "type": "module",
+  "description": "Devnet end-to-end test and draw crank for the daily_draw program",
+  "scripts": {
+    "e2e": "node e2e-devnet.mjs",
+    "crank": "node crank.mjs"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "@switchboard-xyz/on-demand": "^3.10.6"
+  }
+}

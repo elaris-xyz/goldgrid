@@ -1,0 +1,14 @@
+# build output (target is a symlink into the WSL filesystem)
+target
+target/
+.anchor/
+test-ledger/
+node_modules/
+
+# secrets: wallets and the program upgrade key never leave this machine
+**/payer.json
+*.keypair.json
+keys/
+
+# local devnet run state
+cli/devnet-state.json
