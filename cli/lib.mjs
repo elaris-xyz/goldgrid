@@ -1,6 +1,7 @@
 // Shared client for the daily_draw program: connection, PDAs, and the draw
-// crank (commit -> reveal -> score). The crank is permissionless on-chain, so
-// this is the same work the app does when it finds a round waiting to be drawn.
+// crank (commit -> reveal -> score -> close). The crank is permissionless
+// on-chain, so this is the same work the app does when it finds a round
+// waiting to be drawn.
 import anchor from "@coral-xyz/anchor";
 import * as sb from "@switchboard-xyz/on-demand";
 import {
@@ -20,6 +21,9 @@ export const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 export const idl = JSON.parse(fs.readFileSync(new URL("./idl/daily_draw.json", import.meta.url), "utf8"));
 export const PROGRAM_ID = new PublicKey(idl.address);
 export const SGT_GROUP = new PublicKey("GT22s89nU4iWFkNXj1Bw6uYhJJWDRPpShHt4Bk8f99Te");
+const BPF_UPGRADEABLE_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+/** Mirrors REVEAL_TIMEOUT_SLOTS in the program. */
+export const REVEAL_TIMEOUT_SLOTS = 300;
 
 const t0 = Date.now();
 export const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s]`, ...a);
@@ -42,6 +46,8 @@ export const roundPda = (id) => pda(Buffer.from("round"), u64le(id));
 export const seekerPda = (identity) => pda(Buffer.from("seeker"), identity.toBuffer());
 export const ticketPda = (id, identity, index) =>
   pda(Buffer.from("ticket"), u64le(id), identity.toBuffer(), Buffer.from([index]));
+export const programDataPda = () =>
+  PublicKey.findProgramAddressSync([PROGRAM_ID.toBuffer()], BPF_UPGRADEABLE_LOADER)[0];
 
 export async function send(connection, ixs, signers, label) {
   const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...ixs);
@@ -84,47 +90,92 @@ export async function ticketsOf(program, id) {
   return program.account.ticket.all([{ memcmp: { offset: 8, bytes: anchor.utils.bytes.bs58.encode(u64le(id)) } }]);
 }
 
+export async function switchboardProgram() {
+  return (await sb.getDefaultDevnetQueue(RPC)).program;
+}
+
 /**
- * Runs the draw for a round that has passed its draw time: Switchboard commit
- * and our commit_draw in one transaction, then Switchboard reveal and our
- * reveal_draw in one transaction, then scores every ticket.
+ * The cranker's randomness account, created once and re-committed every round:
+ * a new account per draw leaks its rent every time. Kept in a local keypair
+ * file; `fresh` makes a new one when Switchboard refuses to re-commit the old.
+ */
+export async function crankerRandomness(program, payer, sbProgram, { fresh = false } = {}) {
+  const file = new URL("./.randomness-keypair.json", import.meta.url);
+  const config = await program.account.config.fetch(configPda());
+  let kp = !fresh && fs.existsSync(file) ? loadKeypair(file) : null;
+  if (kp && (await program.provider.connection.getAccountInfo(kp.publicKey))) {
+    return { kp, randomness: new sb.Randomness(sbProgram, kp.publicKey) };
+  }
+  kp = Keypair.generate();
+  const [randomness, createIx] = await sb.Randomness.create(sbProgram, kp, config.sbQueue, payer.publicKey);
+  await send(program.provider.connection, [createIx], [payer, kp], "randomness account created");
+  fs.writeFileSync(file, JSON.stringify([...kp.secretKey]));
+  return { kp, randomness };
+}
+
+/** Switchboard commit and our commit_draw in one transaction. */
+export async function commitRound(program, payer, id, { fresh = false } = {}) {
+  const sbProgram = await switchboardProgram();
+  const config = await program.account.config.fetch(configPda());
+  const { kp, randomness } = await crankerRandomness(program, payer, sbProgram, { fresh });
+  const commitIx = await randomness.commitIx(config.sbQueue, payer.publicKey);
+  const ours = await program.methods.commitDraw(new BN(id)).accountsPartial({ randomness: kp.publicKey }).instruction();
+  return send(program.provider.connection, [commitIx, ours], [payer], `round ${id}: commit`);
+}
+
+/** Switchboard reveal and our reveal_draw in one transaction, with retries for the oracle. */
+export async function revealRound(program, payer, id, randomnessKey, attempts = 8) {
+  const sbProgram = await switchboardProgram();
+  const randomness = new sb.Randomness(sbProgram, randomnessKey);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const revealIx = await randomness.revealIx(payer.publicKey);
+      const ours = await program.methods.revealDraw(new BN(id)).accountsPartial({ randomness: randomnessKey }).instruction();
+      return await send(program.provider.connection, [revealIx, ours], [payer], `round ${id}: reveal (attempt ${attempt})`);
+    } catch (e) {
+      if (attempt >= attempts) throw e;
+      log(`reveal attempt ${attempt} failed: ${(e.message ?? e).toString().slice(0, 160)}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
+/**
+ * Advances a round that has passed its draw time as far as it can go:
+ * commit, reveal, score, and close once every ticket is closed. A commit whose
+ * randomness can no longer reveal it (re-committed, or the oracle is gone) is
+ * replaced with fresh randomness after REVEAL_TIMEOUT_SLOTS.
  */
 export async function crankRound(program, payer, id) {
   const connection = program.provider.connection;
-  const config = await program.account.config.fetch(configPda());
   let round = await program.account.round.fetch(roundPda(id));
 
   if ("open" in round.status) {
-    const queue = await sb.getDefaultDevnetQueue(RPC);
-    const rngKp = Keypair.generate();
-    const [randomness, createIx] = await sb.Randomness.create(queue.program, rngKp, config.sbQueue, payer.publicKey);
-    await send(connection, [createIx], [payer, rngKp], `round ${id}: randomness account`);
-    const commitIx = await randomness.commitIx(config.sbQueue, payer.publicKey);
-    const ours = await program.methods
-      .commitDraw(new BN(id))
-      .accountsPartial({ randomness: rngKp.publicKey })
-      .instruction();
-    await send(connection, [commitIx, ours], [payer], `round ${id}: commit`);
+    try {
+      await commitRound(program, payer, id);
+    } catch (e) {
+      log(`commit with the reused randomness account failed (${(e.message ?? e).toString().slice(0, 100)}); using a fresh one`);
+      await commitRound(program, payer, id, { fresh: true });
+    }
     round = await program.account.round.fetch(roundPda(id));
   }
 
   if ("committed" in round.status) {
-    const queue = await sb.getDefaultDevnetQueue(RPC);
-    const randomness = new sb.Randomness(queue.program, round.randomness);
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const revealIx = await randomness.revealIx(payer.publicKey);
-        const ours = await program.methods
-          .revealDraw(new BN(id))
-          .accountsPartial({ randomness: round.randomness })
-          .instruction();
-        await send(connection, [revealIx, ours], [payer], `round ${id}: reveal (attempt ${attempt})`);
-        break;
-      } catch (e) {
-        if (attempt >= 8) throw e;
-        log(`reveal attempt ${attempt} failed: ${(e.message ?? e).toString().slice(0, 160)}`);
-        await new Promise((r) => setTimeout(r, 3000));
+    const sbProgram = await switchboardProgram();
+    const data = await new sb.Randomness(sbProgram, round.randomness).loadData();
+    const revealable = data.seedSlot.toString() === round.commitSlot.toString();
+    if (revealable) {
+      await revealRound(program, payer, id, round.randomness);
+    } else {
+      const slot = await connection.getSlot("confirmed");
+      const readyAt = round.commitSlot.toNumber() + REVEAL_TIMEOUT_SLOTS + 1;
+      if (slot < readyAt) {
+        log(`round ${id}: its randomness was re-committed; fresh commit allowed in ${readyAt - slot} slots`);
+        return round;
       }
+      await commitRound(program, payer, id, { fresh: true });
+      round = await program.account.round.fetch(roundPda(id));
+      await revealRound(program, payer, id, round.randomness);
     }
     round = await program.account.round.fetch(roundPda(id));
   }
@@ -140,6 +191,11 @@ export async function crankRound(program, payer, id) {
       await send(connection, [ix], [payer], `round ${id}: scored ${i + batch.length}/${tickets.length}`);
     }
     round = await program.account.round.fetch(roundPda(id));
+  }
+
+  if ("settled" in round.status && round.openTickets === 0) {
+    const ix = await program.methods.closeRound(new BN(id)).accountsPartial({ creator: round.creator }).instruction();
+    await send(connection, [ix], [payer], `round ${id}: closed, rent back to its creator`);
   }
   return round;
 }

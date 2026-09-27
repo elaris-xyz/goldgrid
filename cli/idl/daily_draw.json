@@ -1,5 +1,5 @@
 {
-  "address": "8X7udAY9fwDU1HY4gWGHvEQahZX6RYfoNYCx8UovxjNQ",
+  "address": "gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM",
   "metadata": {
     "name": "daily_draw",
     "version": "0.1.0",
@@ -9,6 +9,9 @@
   "instructions": [
     {
       "name": "claim",
+      "docs": [
+        "Pays a winning ticket and closes it, returning its rent to the owner."
+      ],
       "discriminator": [
         62,
         198,
@@ -22,6 +25,7 @@
       "accounts": [
         {
           "name": "owner",
+          "writable": true,
           "signer": true,
           "relations": [
             "ticket"
@@ -47,6 +51,7 @@
         },
         {
           "name": "round",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -110,11 +115,122 @@
       ]
     },
     {
+      "name": "close_round",
+      "docs": [
+        "Once every ticket of a settled round is closed, anyone may close the",
+        "round; its rent goes back to whoever created it with the first ticket."
+      ],
+      "discriminator": [
+        149,
+        14,
+        81,
+        88,
+        230,
+        226,
+        234,
+        37
+      ],
+      "accounts": [
+        {
+          "name": "creator",
+          "writable": true
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "_round_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "close_ticket",
+      "docs": [
+        "Closes a settled ticket that has nothing left to claim and returns its",
+        "rent to the owner, so entering costs only the transaction fee."
+      ],
+      "discriminator": [
+        66,
+        209,
+        114,
+        197,
+        75,
+        27,
+        182,
+        117
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "ticket"
+          ]
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "round_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ticket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_round_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "commit_draw",
       "docs": [
         "Binds the round to a Switchboard randomness account committed in this",
         "same transaction, after entries closed: nobody could know the result",
-        "while they could still enter. Anyone may call it."
+        "while they could still enter. Anyone may call it. The seed slot is kept so",
+        "the reveal must be of this very commitment (see reveal_draw)."
       ],
       "discriminator": [
         210,
@@ -380,6 +496,11 @@
     },
     {
       "name": "initialize",
+      "docs": [
+        "Only the program's upgrade authority may initialize: the config is fixed",
+        "forever, so whoever sets it first (Switchboard program, queue, mint)",
+        "decides every draw."
+      ],
       "discriminator": [
         175,
         175,
@@ -395,6 +516,13 @@
           "name": "admin",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "program",
+          "address": "gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM"
+        },
+        {
+          "name": "program_data"
         },
         {
           "name": "config",
@@ -459,7 +587,10 @@
       "name": "reveal_draw",
       "docs": [
         "Reads the revealed value in the same transaction as Switchboard's reveal",
-        "and turns it into the winning numbers. Anyone may call it."
+        "and turns it into the winning numbers. Anyone may call it. The value must",
+        "come from the commitment made at commit_draw: without the seed-slot check,",
+        "whoever cranks could reveal privately, re-commit the same account, and",
+        "repeat until the numbers favour their own ticket."
       ],
       "discriminator": [
         13,
@@ -810,6 +941,36 @@
       "code": 6016,
       "name": "AlreadyClaimed",
       "msg": "Already claimed"
+    },
+    {
+      "code": 6017,
+      "name": "RandomnessExpired",
+      "msg": "Randomness was re-committed after this round's commit"
+    },
+    {
+      "code": 6018,
+      "name": "RevealPending",
+      "msg": "The committed draw can still be revealed"
+    },
+    {
+      "code": 6019,
+      "name": "UnclaimedPrize",
+      "msg": "Claim the prize first; claiming also returns the rent"
+    },
+    {
+      "code": 6020,
+      "name": "TicketsOpen",
+      "msg": "Some tickets of this round are still open"
+    },
+    {
+      "code": 6021,
+      "name": "NotCreator",
+      "msg": "Rent goes back to the round's creator"
+    },
+    {
+      "code": 6022,
+      "name": "NotUpgradeAuthority",
+      "msg": "Only the program's upgrade authority can initialize"
     }
   ],
   "types": [
@@ -1080,6 +1241,13 @@
             "type": "pubkey"
           },
           {
+            "name": "commit_slot",
+            "docs": [
+              "Seed slot of the committed randomness; the reveal must match it."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "winning",
             "type": {
               "array": [
@@ -1095,6 +1263,20 @@
                 "name": "RoundStatus"
               }
             }
+          },
+          {
+            "name": "creator",
+            "docs": [
+              "Paid the round's rent with the first ticket; gets it back at close_round."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "open_tickets",
+            "docs": [
+              "Tickets not yet claimed or closed."
+            ],
+            "type": "u32"
           },
           {
             "name": "bump",

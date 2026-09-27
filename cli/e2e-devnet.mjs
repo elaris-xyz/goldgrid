@@ -1,31 +1,31 @@
 // End-to-end on devnet, against the deployed program and the real Switchboard
 // oracle: set up (once), fund a pot, enter tickets from three players, check the
-// rules that must refuse, run the draw, and pay the winners. Exits non-zero on
-// any mismatch, so a green run means the whole night works, not just a unit.
+// rules that must refuse, attempt the re-roll attack, run the draw, pay the
+// winners, and return every ticket's rent. Exits non-zero on any mismatch, so a
+// green run means the whole night works, not just a unit.
 import anchor from "@coral-xyz/anchor";
 import * as sb from "@switchboard-xyz/on-demand";
-import {
-  createMint,
-  getAccount,
-  getOrCreateAssociatedTokenAccount,
-  mintTo,
-  TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
+import { createMint, getAccount, getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Keypair, LAMPORTS_PER_SOL, SystemProgram } from "@solana/web3.js";
 import fs from "node:fs";
 import {
-  connect,
-  configPda,
   chainNow,
+  commitRound,
+  configPda,
+  connect,
+  crankerRandomness,
   crankRound,
   currentRound,
   loadKeypair,
   log,
+  programDataPda,
+  REVEAL_TIMEOUT_SLOTS,
   roundPda,
   roundTimes,
   send,
   SGT_GROUP,
   sleepUntilChain,
+  switchboardProgram,
   ticketPda,
   ticketsOf,
   vaultPda,
@@ -35,10 +35,16 @@ const { BN } = anchor;
 const ADMIN_PATH = process.env.ADMIN_KEYPAIR ?? new URL("../spikes/switchboard-devnet/payer.json", import.meta.url);
 const STATE = new URL("./devnet-state.json", import.meta.url);
 const SKR = 10 ** 6; // test token has 6 decimals
+const skipAttack = process.argv.includes("--skip-attack");
 
 const admin = loadKeypair(ADMIN_PATH);
 const { connection, program } = connect(admin);
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : {};
+if (state.program !== program.programId.toBase58()) {
+  // A new program id means a new config: start from a fresh mint too.
+  Object.keys(state).forEach((k) => delete state[k]);
+  state.program = program.programId.toBase58();
+}
 const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
 let failures = 0;
 const check = (ok, what) => {
@@ -46,6 +52,14 @@ const check = (ok, what) => {
   if (!ok) failures++;
 };
 const sleepUntil = (unix) => sleepUntilChain(connection, unix);
+const expectError = async (promise, code, what) => {
+  try {
+    await promise;
+    check(false, `${what} (was accepted)`);
+  } catch (e) {
+    check(String(e).includes(code) || JSON.stringify(e.logs ?? []).includes(code), `${what} -> ${code}`);
+  }
+};
 
 log("admin", admin.publicKey.toBase58(), "balance", (await connection.getBalance(admin.publicKey)) / LAMPORTS_PER_SOL, "SOL");
 
@@ -62,21 +76,28 @@ const adminTokens = await getOrCreateAssociatedTokenAccount(connection, admin, m
 let config = await program.account.config.fetchNullable(configPda());
 if (!config) {
   const queue = await sb.getDefaultDevnetQueue();
-  const genesis = Math.floor((await chainNow(connection)) / 60) * 60;
-  await program.methods
-    .initialize({
-      genesisTs: new BN(genesis),
-      roundSecs: new BN(120),
-      entrySecs: new BN(90),
-      perTicketBonus: new BN(1 * SKR),
-      requireSgt: false,
-      sgtGroup: SGT_GROUP,
-      sbProgram: queue.program.programId,
-      sbQueue: queue.pubkey,
-    })
-    .accountsPartial({ admin: admin.publicKey, mint, tokenProgram: TOKEN_PROGRAM_ID })
-    .rpc();
-  log("initialized: 2-minute rounds, entries close at 90s, demo mode (no SGT)");
+  const params = {
+    genesisTs: new BN(Math.floor((await chainNow(connection)) / 60) * 60),
+    roundSecs: new BN(120),
+    entrySecs: new BN(90),
+    perTicketBonus: new BN(1 * SKR),
+    requireSgt: false,
+    sgtGroup: SGT_GROUP,
+    sbProgram: queue.program.programId,
+    sbQueue: queue.pubkey,
+  };
+  const init = (signer) =>
+    program.methods
+      .initialize(params)
+      .accountsPartial({ admin: signer.publicKey, program: program.programId, programData: programDataPda(), mint, tokenProgram: TOKEN_PROGRAM_ID })
+      .signers([signer])
+      .rpc();
+  // Someone who is not the upgrade authority must not be able to set the config.
+  const stranger = Keypair.generate();
+  await send(connection, [SystemProgram.transfer({ fromPubkey: admin.publicKey, toPubkey: stranger.publicKey, lamports: 0.02 * LAMPORTS_PER_SOL })], [admin], "fund a stranger");
+  await expectError(init(stranger), "NotUpgradeAuthority", "initialize by a non-authority is refused");
+  await init(admin);
+  log("initialized by the upgrade authority: 2-minute rounds, entries close at 90s, demo mode (no SGT)");
   config = await program.account.config.fetch(configPda());
 }
 
@@ -88,9 +109,9 @@ await program.methods
   .accountsPartial({ sponsor: admin.publicKey, mint, sponsorTokens: adminTokens.address, tokenProgram: TOKEN_PROGRAM_ID })
   .rpc();
 config = await program.account.config.fetch(configPda());
-check(config.sponsorBudget.toNumber() === budgetBefore + 100 * SKR, "fund adds 100 SKR to the sponsor budget");
+check(config.sponsorBudget.toNumber() === budgetBefore + 100 * SKR, "fund credits the 100 SKR the vault received");
 
-// 3. Three players, each paid a little SOL for fees by the admin (no faucet).
+// 3. Three players plus a latecomer, each paid a little SOL for fees by the admin.
 const players = [Keypair.generate(), Keypair.generate(), Keypair.generate()];
 const latecomer = Keypair.generate();
 await send(
@@ -111,24 +132,9 @@ log(`entering round ${id}`);
 const enter = (player, picks, index = 0) =>
   program.methods
     .enter(new BN(id), index, picks)
-    .accountsPartial({
-      player: player.publicKey,
-      identity: player.publicKey,
-      sgtTokens: null,
-      round: roundPda(id),
-      ticket: ticketPda(id, player.publicKey, index),
-    })
+    .accountsPartial({ player: player.publicKey, identity: player.publicKey, sgtTokens: null, round: roundPda(id), ticket: ticketPda(id, player.publicKey, index) })
     .signers([player])
     .rpc();
-
-const expectError = async (promise, code, what) => {
-  try {
-    await promise;
-    check(false, `${what} (was accepted)`);
-  } catch (e) {
-    check(String(e).includes(code), `${what} -> ${code}`);
-  }
-};
 
 await enter(players[0], [1, 2, 3, 4, 5]);
 await enter(players[1], [10, 20, 30, 40, 50]);
@@ -138,65 +144,100 @@ await expectError(enter(players[0], [7, 8, 9, 11, 12], 1), "TicketLimit", "secon
 await expectError(enter(players[1], [3, 3, 4, 5, 6], 1), "InvalidPicks", "duplicate numbers are refused");
 await expectError(enter(players[2], [0, 1, 2, 3, 4], 1), "InvalidPicks", "number 0 is refused");
 
+// Only our players' tickets: someone using the app may enter this round too.
+const mine = (tickets) => tickets.filter((t) => players.some((p) => p.publicKey.equals(t.account.owner)));
 let round = await program.account.round.fetch(roundPda(id));
-check(round.tickets === 3, "round counts 3 tickets");
-const carriedIn = round.pot.toNumber() - 3 * SKR;
-check(carriedIn >= 0, `pot = carry-in ${carriedIn / SKR} + 1 SKR per ticket`);
+check(mine(await ticketsOf(program, id)).length === 3, "our 3 tickets are on-chain");
+check(round.openTickets === round.tickets, "every entered ticket counts as open");
 
-// 4. Nobody may draw early; entries close before the draw.
-await expectError(
-  program.methods.commitDraw(new BN(id)).accountsPartial({ randomness: Keypair.generate().publicKey }).rpc(),
-  "Error",
-  "commit before draw time is refused"
-);
+// 4. A real, freshly committed randomness account before draw time: only the
+//    draw-time guard can refuse it (a random key would fail the owner check first).
+await expectError(commitRound(program, admin, id), "TooEarly", "commit before draw time is refused");
 await sleepUntil(roundTimes(config, id).close);
 await expectError(enter(latecomer, [7, 8, 9, 11, 12]), "EntriesClosed", "a new player entering after close is refused");
-
-// 5. The draw, then scoring, exactly as the app would run it.
 await sleepUntil(roundTimes(config, id).draw);
+
+// 5. The re-roll attack: commit, peek at the value, re-commit the same account,
+//    then reveal with our instruction. The program must refuse the new value.
+if (!skipAttack) {
+  await commitRound(program, admin, id);
+  round = await program.account.round.fetch(roundPda(id));
+  const sbProgram = await switchboardProgram();
+  const { randomness } = await crankerRandomness(program, admin, sbProgram);
+  const peek = await randomness.revealIx(admin.publicKey);
+  await send(connection, [peek], [admin], "attacker reveals privately (without reveal_draw)");
+  let recommitted = false;
+  try {
+    await send(connection, [await randomness.commitIx(config.sbQueue, admin.publicKey)], [admin], "attacker re-commits the same account");
+    recommitted = true;
+  } catch (e) {
+    log(`Switchboard refused the re-commit (${(e.message ?? e).toString().slice(0, 80)})`);
+  }
+  if (recommitted) {
+    const ours = await program.methods.revealDraw(new BN(id)).accountsPartial({ randomness: round.randomness }).instruction();
+    await expectError(
+      (async () => send(connection, [await randomness.revealIx(admin.publicKey), ours], [admin], "attacker reveals the re-rolled value"))(),
+      "RandomnessExpired",
+      "a re-rolled value is refused"
+    );
+    // The committed value can no longer be revealed; the round must recover
+    // with fresh randomness once the reveal timeout has passed.
+    await expectError(commitRound(program, admin, id, { fresh: true }), "RevealPending", "a fresh commit before the timeout is refused");
+    const waitFor = round.commitSlot.toNumber() + REVEAL_TIMEOUT_SLOTS + 1;
+    while ((await connection.getSlot("confirmed")) < waitFor) {
+      log(`waiting for the reveal timeout (${waitFor - (await connection.getSlot("confirmed"))} slots)`);
+      await new Promise((r) => setTimeout(r, 15000));
+    }
+  }
+}
+
+// 6. The draw, then scoring, exactly as the app would run it.
 round = await crankRound(program, admin, id);
 log(`winning numbers: ${round.winning.join(" ")}  best=${round.best} winners=${round.winners} share=${round.share.toNumber() / SKR} SKR`);
 check("settled" in round.status, "round settled after scoring");
 
-const tickets = await ticketsOf(program, id);
-const matchesOk = tickets.every((t) => {
-  const expected = t.account.picks.filter((n) => round.winning.includes(n)).length;
-  return t.account.matches === expected;
-});
-check(matchesOk, "every ticket's recorded matches equal a recount from the winning numbers");
-const best = Math.max(...tickets.map((t) => t.account.matches));
+const all = await ticketsOf(program, id);
+check(all.every((t) => t.account.matches === t.account.picks.filter((n) => round.winning.includes(n)).length),
+  "every ticket's recorded matches equal a recount from the winning numbers");
+const best = Math.max(...all.map((t) => t.account.matches));
 check(round.best === best, `best match recorded (${round.best}) equals the recount (${best})`);
 
-// 6. Winners claim; losers cannot.
+// 7. Winners claim (which also returns the ticket's rent); everyone else closes
+//    their ticket for the rent. Losers cannot claim, and winners cannot skip paying.
 config = await program.account.config.fetch(configPda());
-for (const t of tickets) {
+for (const t of mine(all)) {
   const player = players.find((p) => p.publicKey.equals(t.account.owner));
+  const short = player.publicKey.toBase58().slice(0, 6);
   const ata = await getOrCreateAssociatedTokenAccount(connection, admin, mint, player.publicKey);
-  const claim = program.methods
-    .claim(new BN(id))
-    .accountsPartial({ owner: player.publicKey, ticket: t.publicKey, mint, ownerTokens: ata.address, tokenProgram: TOKEN_PROGRAM_ID })
-    .signers([player])
-    .rpc();
+  const accounts = { owner: player.publicKey, ticket: t.publicKey, mint, ownerTokens: ata.address, tokenProgram: TOKEN_PROGRAM_ID };
+  const claim = () => program.methods.claim(new BN(id)).accountsPartial(accounts).signers([player]).rpc();
+  const close = () => program.methods.closeTicket(new BN(id)).accountsPartial({ owner: player.publicKey, ticket: t.publicKey }).signers([player]).rpc();
+  const lamportsBefore = await connection.getBalance(player.publicKey);
   if (round.best > 0 && t.account.matches === round.best) {
-    await claim;
+    await expectError(close(), "UnclaimedPrize", `winner ${short} cannot close before claiming`);
+    await claim();
     const bal = (await getAccount(connection, ata.address)).amount;
-    check(Number(bal) === round.share.toNumber(), `winner ${player.publicKey.toBase58().slice(0, 6)} received ${Number(bal) / SKR} SKR`);
-    await expectError(
-      program.methods
-        .claim(new BN(id))
-        .accountsPartial({ owner: player.publicKey, ticket: t.publicKey, mint, ownerTokens: ata.address, tokenProgram: TOKEN_PROGRAM_ID })
-        .signers([player])
-        .rpc(),
-      "AlreadyClaimed",
-      "second claim is refused"
-    );
+    check(Number(bal) === round.share.toNumber(), `winner ${short} received ${Number(bal) / SKR} SKR`);
   } else {
-    await expectError(claim, "NotAWinner", `non-winner ${player.publicKey.toBase58().slice(0, 6)} cannot claim`);
+    await expectError(claim(), "NotAWinner", `non-winner ${short} cannot claim`);
+    await close();
   }
+  check((await connection.getAccountInfo(t.publicKey)) === null, `ticket of ${short} is closed`);
+  check((await connection.getBalance(player.publicKey)) > lamportsBefore, `${short} got the ticket rent back`);
 }
 if (round.best === 0) log(`nobody matched: the pot of ${round.pot.toNumber() / SKR} SKR rolled into the next round`);
 
+// 8. With every ticket closed, the round closes and its rent goes to its creator.
+round = await program.account.round.fetch(roundPda(id));
+if (round.openTickets === 0) {
+  await crankRound(program, admin, id);
+  check((await connection.getAccountInfo(roundPda(id))) === null, "round closed once all its tickets were closed");
+} else {
+  log(`round ${id} still has ${round.openTickets} open tickets from other players; not closed`);
+}
+
 const vault = await getAccount(connection, vaultPda());
+config = await program.account.config.fetch(configPda());
 log(`vault holds ${Number(vault.amount) / SKR} SKR; sponsor budget ${config.sponsorBudget.toNumber() / SKR}, carry ${config.carry.toNumber() / SKR}`);
 log(failures === 0 ? "RESULT: PASS" : `RESULT: FAIL (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

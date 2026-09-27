@@ -14,11 +14,13 @@ import com.solana.transaction.Message
 import com.solana.transaction.Transaction
 import com.solana.transaction.TransactionInstruction
 import com.vamahan.dailydraw.draw.DrawConfig
+import com.vamahan.dailydraw.draw.DrawError
 import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
 import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.draw.SeekerState
+import com.vamahan.dailydraw.draw.Sgt
 import com.vamahan.dailydraw.solana.SolanaRpc
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,18 +32,26 @@ import kotlinx.coroutines.launch
 
 data class Claimable(val ticket: DrawTicket, val round: DrawRound)
 
+/** Who the program counts as "one Seeker": the SGT mint, or the wallet in demo mode. */
+data class Identity(val key: String, val sgtTokens: String?)
+
 data class UiState(
     val wallet: String? = null,
+    val identity: Identity? = null,
     val lamports: Long? = null,
     val skr: Long? = null,
     /** chain time minus device time, so countdowns follow the program's clock. */
     val clockOffset: Long = 0,
     val config: DrawConfig? = null,
+    /** The program that owns the prize mint (classic SPL Token or Token-2022). */
+    val tokenProgram: String? = null,
     val roundId: Long = 0,
     val round: DrawRound? = null,
     val lastRound: DrawRound? = null,
     val myTickets: List<DrawTicket> = emptyList(),
     val claimable: List<Claimable> = emptyList(),
+    /** Finished tickets with nothing to claim, whose rent can come back. */
+    val closable: List<Claimable> = emptyList(),
     val seeker: SeekerState? = null,
     val selection: Set<Int> = emptySet(),
     val busy: String? = null,
@@ -69,6 +79,8 @@ class DrawViewModel : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
     private var poller: Job? = null
+    /** Ticket PDAs by (round, index) for the current identity; derivation is not free. */
+    private val ticketAddresses = HashMap<Pair<Long, Int>, String>()
 
     fun start() {
         if (poller?.isActive == true) return
@@ -96,31 +108,70 @@ class DrawViewModel : ViewModel() {
             _state.update { it.copy(clockOffset = chain - System.currentTimeMillis() / 1000) }
         }
         val config = DrawConfig.decode(rpc.accountData(DrawProgram.config().base58()) ?: return)
+        val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(config.mint.base58())
         val now = _state.value.chainNow()
         val id = config.roundAt(now)
         val (current, previous) = rpc.multipleAccounts(
             listOf(DrawProgram.round(id).base58(), DrawProgram.round(id - 1).base58())
         ).map { data -> data?.let(DrawRound::decode) }
-        _state.update { it.copy(config = config, roundId = id, round = current, lastRound = previous ?: it.lastRound.takeIf { r -> r?.id == id - 1 }) }
+        _state.update {
+            it.copy(
+                config = config, tokenProgram = tokenProgram, roundId = id, round = current,
+                lastRound = previous ?: it.lastRound.takeIf { r -> r?.id == id - 1 },
+            )
+        }
 
         val owner = _state.value.wallet ?: return
-        val ownerKey = SolanaPublicKey.from(owner)
-        // Ticket layout: 8-byte discriminator, round (u64), then the owner.
-        val tickets = rpc.programAccounts(DrawProgram.PROGRAM_ID.base58(), 16, owner)
-            .map { (address, data) -> DrawTicket.decode(address, data) }
+        val identity = _state.value.identity ?: resolveIdentity(owner, config) ?: return
+        val identityKey = SolanaPublicKey.from(identity.key)
+
+        // Tickets are PDAs of (round, identity, index): read the recent ones
+        // directly instead of scanning every account of the program.
+        val slots = (id - RECENT_ROUNDS + 1..id).flatMap { r -> (0 until DrawProgram.MAX_TICKETS_PER_ROUND).map { r to it } }
+        val addresses = slots.map { key -> ticketAddresses.getOrPut(key) { DrawProgram.ticket(key.first, identityKey, key.second).base58() } }
+        val tickets = rpc.multipleAccounts(addresses).zip(addresses)
+            .mapNotNull { (data, address) -> data?.let { DrawTicket.decode(address, it) } }
+            .filter { it.owner.base58() == owner }
             .sortedByDescending { it.round }
-        val roundIds = tickets.map { it.round }.distinct().take(20)
+        val roundIds = tickets.map { it.round }.distinct()
         val rounds = rpc.multipleAccounts(roundIds.map { DrawProgram.round(it).base58() })
             .zip(roundIds).mapNotNull { (data, rid) -> data?.let { rid to DrawRound.decode(it) } }.toMap()
-        val claimable = tickets.mapNotNull { t ->
-            val r = rounds[t.round] ?: return@mapNotNull null
-            if (r.status == RoundStatus.Settled && r.best > 0 && t.matches == r.best && !t.claimed) Claimable(t, r) else null
+        val finished = tickets.mapNotNull { t -> rounds[t.round]?.takeIf { it.status == RoundStatus.Settled }?.let { Claimable(t, it) } }
+        val (claimable, closable) = finished.partition { (t, r) -> r.best > 0 && t.matches == r.best && !t.claimed }
+
+        val ownerKey = SolanaPublicKey.from(owner)
+        val seeker = rpc.accountData(DrawProgram.seeker(identityKey).base58())?.let(SeekerState::decode)
+        val skr = tokenProgram?.let { tp ->
+            rpc.tokenBalance(DrawProgram.associatedTokenAccount(ownerKey, config.mint, SolanaPublicKey.from(tp)).base58())
         }
-        val seeker = rpc.accountData(DrawProgram.seeker(ownerKey).base58())?.let(SeekerState::decode)
-        val ata = DrawProgram.associatedTokenAccount(ownerKey, config.mint).base58()
-        val skr = rpc.tokenBalance(ata)
         val lamports = rpc.lamports(owner)
-        _state.update { it.copy(myTickets = tickets, claimable = claimable, seeker = seeker, skr = skr, lamports = lamports) }
+        _state.update {
+            it.copy(myTickets = tickets, claimable = claimable, closable = closable, seeker = seeker, skr = skr, lamports = lamports)
+        }
+    }
+
+    /**
+     * Demo mode: the wallet is its own identity. SGT mode: the wallet must hold a
+     * Seeker Genesis Token; its mint is the identity and its token account goes
+     * into `enter`. Without one the app says so rather than failing at entry.
+     */
+    private suspend fun resolveIdentity(owner: String, config: DrawConfig): Identity? {
+        val identity = if (!config.requireSgt) {
+            Identity(owner, null)
+        } else {
+            val holdings = rpc.tokenHoldings(owner, DrawProgram.TOKEN_2022_PROGRAM.base58())
+            val mints = rpc.multipleAccounts(holdings.map { it.mint })
+            holdings.zip(mints).firstOrNull { (h, data) ->
+                data != null && Sgt.isSeekerGenesisToken(SolanaPublicKey.from(h.mint), data)
+            }?.let { (h, _) -> Identity(h.mint, h.account) }
+        }
+        if (identity == null) {
+            _state.update { it.copy(message = DrawError.NotASeeker.userMessage) }
+        } else {
+            ticketAddresses.clear()
+            _state.update { it.copy(identity = identity) }
+        }
+        return identity
     }
 
     fun toggle(number: Int) = _state.update {
@@ -144,8 +195,12 @@ class DrawViewModel : ViewModel() {
         when (val result = wallet.connect(sender)) {
             is TransactionResult.Success -> {
                 val key = result.authResult.accounts.first().publicKey
-                _state.update { it.copy(wallet = Base58.encodeToString(key), busy = null) }
-                runCatching { refresh(fullClock = true) }
+                _state.update { it.copy(wallet = Base58.encodeToString(key), identity = null, busy = null) }
+                try {
+                    refresh(fullClock = true)
+                } catch (e: Exception) {
+                    _state.update { it.copy(message = "Network: ${e.message?.take(80)}") }
+                }
             }
             is TransactionResult.NoWalletFound -> _state.update { it.copy(busy = null, message = "No Solana wallet found. Install Phantom or Solflare.") }
             is TransactionResult.Failure -> _state.update { it.copy(busy = null, message = "Wallet: ${result.e.message}") }
@@ -155,37 +210,64 @@ class DrawViewModel : ViewModel() {
     fun enter(sender: ActivityResultSender) = viewModelScope.launch {
         val s = _state.value
         val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
+        val identity = s.identity ?: return@launch
         val picks = s.selection.sorted()
         if (picks.size != DrawProgram.PICKS) return@launch
         val index = s.seeker?.ticketsAllowedIn(s.roundId)?.first ?: 0
-        send(sender, "Entering the draw…", "Ticket entered: ${picks.joinToString(" ")}") {
-            listOf(DrawProgram.enter(owner, s.roundId, index, picks))
+        val ok = send(sender, "Entering the draw…", "Ticket entered: ${picks.joinToString(" ")}") {
+            listOf(
+                DrawProgram.enter(
+                    owner, SolanaPublicKey.from(identity.key), identity.sgtTokens?.let(SolanaPublicKey::from),
+                    s.roundId, index, picks,
+                ),
+            )
         }
-        _state.update { it.copy(selection = emptySet()) }
+        // Keep the picks when entering failed, so the player can simply retry.
+        if (ok) _state.update { it.copy(selection = emptySet()) }
     }
 
     fun claim(sender: ActivityResultSender, item: Claimable) = viewModelScope.launch {
         val s = _state.value
         val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
         val mint = s.config?.mint ?: return@launch
-        val ata = DrawProgram.associatedTokenAccount(owner, mint)
+        val tokenProgram = s.tokenProgram?.let(SolanaPublicKey::from) ?: return@launch
+        val ata = DrawProgram.associatedTokenAccount(owner, mint, tokenProgram)
         send(sender, "Claiming your prize…", "Claimed ${formatSkr(item.round.share)} SKR") {
             listOf(
-                DrawProgram.createTokenAccountIdempotent(owner, ata, owner, mint),
-                DrawProgram.claim(owner, item.round.id, SolanaPublicKey.from(item.ticket.address), mint, ata),
+                DrawProgram.createTokenAccountIdempotent(owner, ata, owner, mint, tokenProgram),
+                DrawProgram.claim(owner, item.round.id, SolanaPublicKey.from(item.ticket.address), mint, ata, tokenProgram),
             )
         }
     }
 
-    private suspend fun send(sender: ActivityResultSender, busy: String, done: String, build: suspend () -> List<TransactionInstruction>) {
+    /** Closes finished tickets with nothing to claim, returning their rent in one signature. */
+    fun collect(sender: ActivityResultSender) = viewModelScope.launch {
+        val s = _state.value
+        val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
+        val batch = s.closable.take(MAX_CLOSES_PER_TX)
+        if (batch.isEmpty()) return@launch
+        send(sender, "Returning ticket SOL…", "Returned the SOL of ${batch.size} ticket(s)") {
+            batch.map { (t, r) -> DrawProgram.closeTicket(owner, r.id, SolanaPublicKey.from(t.address)) }
+        }
+    }
+
+    /** Signs and sends through the wallet; true once the transaction is confirmed. */
+    private suspend fun send(
+        sender: ActivityResultSender,
+        busy: String,
+        done: String,
+        build: suspend () -> List<TransactionInstruction>,
+    ): Boolean {
         _state.update { it.copy(busy = busy, message = null) }
         try {
             val instructions = build()
-            val blockhash = rpc.latestBlockhash()
-            val message = Message.Builder().apply { instructions.forEach { addInstruction(it) } }
-                .setRecentBlockhash(blockhash).build()
-            val tx = Transaction(message)
-            val result = wallet.transact(sender) { signAndSendTransactions(arrayOf(tx.serialize())) }
+            val result = wallet.transact(sender) {
+                // Fetched once the wallet is open and authorized: a blockhash taken
+                // before the approval screen can expire while the person reads it.
+                val message = Message.Builder().apply { instructions.forEach { addInstruction(it) } }
+                    .setRecentBlockhash(rpc.latestBlockhash()).build()
+                signAndSendTransactions(arrayOf(Transaction(message).serialize()))
+            }
             val signature = when (result) {
                 is TransactionResult.Success -> result.payload.signatures.first()
                 is TransactionResult.NoWalletFound -> throw IllegalStateException("No Solana wallet found")
@@ -195,8 +277,8 @@ class DrawViewModel : ViewModel() {
             repeat(30) {
                 if (rpc.isConfirmed(sig)) {
                     _state.update { it.copy(busy = null, message = done) }
-                    refresh(fullClock = false)
-                    return
+                    runCatching { refresh(fullClock = false) }
+                    return true
                 }
                 delay(1000)
             }
@@ -204,19 +286,23 @@ class DrawViewModel : ViewModel() {
         } catch (e: Exception) {
             _state.update { it.copy(busy = null, message = friendly(e)) }
         }
+        return false
     }
 
     private fun friendly(e: Exception): String {
         val text = e.message ?: e.toString()
+        DrawError.from(text)?.let { return it.userMessage }
         return when {
-            // Anchor custom errors start at 6000 (0x1770), in DrawError's declaration order.
-            "0x1778" in text || "TicketLimit" in text -> "No tickets left this round. A 7-day streak earns another."
-            "0x1774" in text || "EntriesClosed" in text -> "Entries for this round are closed."
-            "0x1773" in text || "NotCurrentRound" in text -> "That round is over. Try again for the new one."
-            "0x1777" in text -> "Ticket count changed. Try again."
             "insufficient" in text.lowercase() -> "Not enough devnet SOL for the fee."
+            "blockhash" in text.lowercase() -> "The transaction expired before it was sent. Try again."
             else -> text.take(120)
         }
+    }
+
+    private companion object {
+        /** Rounds of tickets the app watches: a day of demo rounds, three weeks of nightly ones. */
+        const val RECENT_ROUNDS = 20L
+        const val MAX_CLOSES_PER_TX = 8
     }
 }
 

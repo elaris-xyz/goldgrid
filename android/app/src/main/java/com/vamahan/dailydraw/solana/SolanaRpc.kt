@@ -73,6 +73,30 @@ class SolanaRpc(private val url: String) {
         return decode(result.jsonObject["value"] ?: JsonNull)
     }
 
+    /** The program that owns an account (for a mint: the token program it runs under). */
+    suspend fun accountOwner(address: String): String? {
+        val result = call("getAccountInfo", buildJsonArray { add(address); add(base64Config) })
+        val value = result.jsonObject["value"] ?: return null
+        if (value is JsonNull) return null
+        return value.jsonObject["owner"]?.jsonPrimitive?.content
+    }
+
+    /** Token accounts of `owner` under one token program, with a non-zero balance. */
+    suspend fun tokenHoldings(owner: String, tokenProgram: String): List<TokenHolding> {
+        val result = call("getTokenAccountsByOwner", buildJsonArray {
+            add(owner)
+            add(buildJsonObject { put("programId", tokenProgram) })
+            add(buildJsonObject { put("encoding", "jsonParsed"); put("commitment", "confirmed") })
+        })
+        return result.jsonObject["value"]!!.jsonArray.mapNotNull { entry ->
+            val info = entry.jsonObject["account"]?.jsonObject?.get("data")?.jsonObject
+                ?.get("parsed")?.jsonObject?.get("info")?.jsonObject ?: return@mapNotNull null
+            val amount = info["tokenAmount"]?.jsonObject?.get("amount")?.jsonPrimitive?.content?.toLongOrNull() ?: 0
+            if (amount == 0L) return@mapNotNull null
+            TokenHolding(entry.jsonObject["pubkey"]!!.jsonPrimitive.content, info["mint"]!!.jsonPrimitive.content, amount)
+        }
+    }
+
     suspend fun multipleAccounts(addresses: List<String>): List<ByteArray?> {
         if (addresses.isEmpty()) return emptyList()
         val result = call("getMultipleAccounts", buildJsonArray {
@@ -80,27 +104,6 @@ class SolanaRpc(private val url: String) {
             add(base64Config)
         })
         return result.jsonObject["value"]!!.jsonArray.map { decode(it) }
-    }
-
-    /** Accounts of a program whose data at `offset` equals `bytesBase58`. */
-    suspend fun programAccounts(program: String, offset: Int, bytesBase58: String): List<Pair<String, ByteArray>> {
-        val result = call("getProgramAccounts", buildJsonArray {
-            add(program)
-            add(buildJsonObject {
-                put("encoding", "base64")
-                put("commitment", "confirmed")
-                put("filters", buildJsonArray {
-                    add(buildJsonObject {
-                        put("memcmp", buildJsonObject { put("offset", offset); put("bytes", bytesBase58) })
-                    })
-                })
-            })
-        })
-        return result.jsonArray.mapNotNull { entry ->
-            val o = entry.jsonObject
-            val data = decode(o["account"] ?: return@mapNotNull null) ?: return@mapNotNull null
-            o["pubkey"]!!.jsonPrimitive.content to data
-        }
     }
 
     suspend fun latestBlockhash(): String {
@@ -149,3 +152,5 @@ class SolanaRpc(private val url: String) {
 }
 
 class RpcException(message: String) : IOException(message)
+
+data class TokenHolding(val account: String, val mint: String, val amount: Long)

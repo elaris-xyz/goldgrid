@@ -12,15 +12,23 @@ pub mod sgt;
 
 use logic::*;
 
-declare_id!("8X7udAY9fwDU1HY4gWGHvEQahZX6RYfoNYCx8UovxjNQ");
+declare_id!("gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM");
 
 pub const UNSCORED: u8 = u8::MAX;
+/// A committed draw that nobody revealed for this many slots (~2 minutes) may be
+/// committed again with fresh randomness, so an oracle outage cannot strand a
+/// pot. Anyone can reveal before then, so withholding a bad result gains nothing
+/// while any honest client is running.
+pub const REVEAL_TIMEOUT_SLOTS: u64 = 300;
 pub const TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
 #[program]
 pub mod daily_draw {
     use super::*;
 
+    /// Only the program's upgrade authority may initialize: the config is fixed
+    /// forever, so whoever sets it first (Switchboard program, queue, mint)
+    /// decides every draw.
     pub fn initialize(ctx: Context<Initialize>, params: InitParams) -> Result<()> {
         require!(params.round_secs > 0, DrawError::BadConfig);
         require!(params.entry_secs > 0 && params.entry_secs < params.round_secs, DrawError::BadConfig);
@@ -45,6 +53,7 @@ pub mod daily_draw {
     /// that night's pot, so the pot grows in front of everyone as people enter.
     pub fn fund(ctx: Context<Fund>, amount: u64) -> Result<()> {
         require!(amount > 0, DrawError::ZeroAmount);
+        let before = ctx.accounts.vault.amount;
         let accounts = TransferChecked {
             from: ctx.accounts.sponsor_tokens.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
@@ -56,9 +65,13 @@ pub mod daily_draw {
             amount,
             ctx.accounts.mint.decimals,
         )?;
+        // Credit what arrived, not what was sent: a Token-2022 transfer fee would
+        // otherwise let the budget promise tokens the vault does not hold.
+        ctx.accounts.vault.reload()?;
+        let received = ctx.accounts.vault.amount.checked_sub(before).ok_or(DrawError::Overflow)?;
         let config = &mut ctx.accounts.config;
-        config.sponsor_budget = config.sponsor_budget.checked_add(amount).ok_or(DrawError::Overflow)?;
-        emit!(Funded { sponsor: ctx.accounts.sponsor.key(), amount });
+        config.sponsor_budget = config.sponsor_budget.checked_add(received).ok_or(DrawError::Overflow)?;
+        emit!(Funded { sponsor: ctx.accounts.sponsor.key(), amount: received });
         Ok(())
     }
 
@@ -96,6 +109,7 @@ pub mod daily_draw {
             round.pot = std::mem::take(&mut config.carry);
             round.best = 0;
             round.status = RoundStatus::Open;
+            round.creator = player;
             round.bump = ctx.bumps.round;
         }
         require!(round.status == RoundStatus::Open, DrawError::EntriesClosed);
@@ -126,6 +140,7 @@ pub mod daily_draw {
         ticket.bump = ctx.bumps.ticket;
 
         round.tickets = round.tickets.checked_add(1).ok_or(DrawError::Overflow)?;
+        round.open_tickets = round.open_tickets.checked_add(1).ok_or(DrawError::Overflow)?;
         let bonus = config.per_ticket_bonus.min(config.sponsor_budget);
         config.sponsor_budget -= bonus;
         round.pot = round.pot.checked_add(bonus).ok_or(DrawError::Overflow)?;
@@ -136,24 +151,36 @@ pub mod daily_draw {
 
     /// Binds the round to a Switchboard randomness account committed in this
     /// same transaction, after entries closed: nobody could know the result
-    /// while they could still enter. Anyone may call it.
+    /// while they could still enter. Anyone may call it. The seed slot is kept so
+    /// the reveal must be of this very commitment (see reveal_draw).
     pub fn commit_draw(ctx: Context<CommitDraw>, round_id: u64) -> Result<()> {
         let clock = Clock::get()?;
         let round = &mut ctx.accounts.round;
-        require!(round.status == RoundStatus::Open, DrawError::WrongStatus);
+        match round.status {
+            RoundStatus::Open => {}
+            RoundStatus::Committed => require!(
+                clock.slot > round.commit_slot.saturating_add(REVEAL_TIMEOUT_SLOTS),
+                DrawError::RevealPending
+            ),
+            _ => return err!(DrawError::WrongStatus),
+        }
         require!(clock.unix_timestamp >= round.draw_ts, DrawError::TooEarly);
         let data = RandomnessAccountData::parse(ctx.accounts.randomness.try_borrow_data()?)
             .map_err(|_| DrawError::BadRandomness)?;
         require_keys_eq!(data.queue, ctx.accounts.config.sb_queue, DrawError::BadRandomness);
         require!(data.seed_slot == clock.slot.saturating_sub(1), DrawError::StaleCommit);
         round.randomness = ctx.accounts.randomness.key();
+        round.commit_slot = data.seed_slot;
         round.status = RoundStatus::Committed;
         emit!(DrawCommitted { round: round_id, randomness: round.randomness });
         Ok(())
     }
 
     /// Reads the revealed value in the same transaction as Switchboard's reveal
-    /// and turns it into the winning numbers. Anyone may call it.
+    /// and turns it into the winning numbers. Anyone may call it. The value must
+    /// come from the commitment made at commit_draw: without the seed-slot check,
+    /// whoever cranks could reveal privately, re-commit the same account, and
+    /// repeat until the numbers favour their own ticket.
     pub fn reveal_draw(ctx: Context<RevealDraw>, round_id: u64) -> Result<()> {
         let clock = Clock::get()?;
         let round = &mut ctx.accounts.round;
@@ -161,6 +188,7 @@ pub mod daily_draw {
         require_keys_eq!(ctx.accounts.randomness.key(), round.randomness, DrawError::BadRandomness);
         let data = RandomnessAccountData::parse(ctx.accounts.randomness.try_borrow_data()?)
             .map_err(|_| DrawError::BadRandomness)?;
+        require!(data.seed_slot == round.commit_slot, DrawError::RandomnessExpired);
         let value = data.get_value(clock.slot).map_err(|_| DrawError::NotRevealed)?;
         round.winning = draw_five(&value);
         round.status = RoundStatus::Revealed;
@@ -208,13 +236,16 @@ pub mod daily_draw {
         Ok(())
     }
 
+    /// Pays a winning ticket and closes it, returning its rent to the owner.
     pub fn claim(ctx: Context<Claim>, round_id: u64) -> Result<()> {
-        let round = &ctx.accounts.round;
+        let round = &mut ctx.accounts.round;
         let ticket = &mut ctx.accounts.ticket;
         require!(round.status == RoundStatus::Settled, DrawError::WrongStatus);
         require!(round.best > 0 && ticket.matches == round.best, DrawError::NotAWinner);
         require!(!ticket.claimed, DrawError::AlreadyClaimed);
         ticket.claimed = true;
+        round.open_tickets = round.open_tickets.saturating_sub(1);
+        let share = round.share;
 
         let seeds: &[&[u8]] = &[b"config", &[ctx.accounts.config.bump]];
         let accounts = TransferChecked {
@@ -225,10 +256,31 @@ pub mod daily_draw {
         };
         token_interface::transfer_checked(
             CpiContext::new_with_signer(ctx.accounts.token_program.to_account_info(), accounts, &[seeds]),
-            round.share,
+            share,
             ctx.accounts.mint.decimals,
         )?;
-        emit!(Claimed { round: round_id, owner: ticket.owner, amount: round.share });
+        emit!(Claimed { round: round_id, owner: ticket.owner, amount: share });
+        Ok(())
+    }
+
+    /// Closes a settled ticket that has nothing left to claim and returns its
+    /// rent to the owner, so entering costs only the transaction fee.
+    pub fn close_ticket(ctx: Context<CloseTicket>, _round_id: u64) -> Result<()> {
+        let round = &mut ctx.accounts.round;
+        let ticket = &ctx.accounts.ticket;
+        require!(round.status == RoundStatus::Settled, DrawError::WrongStatus);
+        let unpaid_win = round.best > 0 && ticket.matches == round.best && !ticket.claimed;
+        require!(!unpaid_win, DrawError::UnclaimedPrize);
+        round.open_tickets = round.open_tickets.saturating_sub(1);
+        Ok(())
+    }
+
+    /// Once every ticket of a settled round is closed, anyone may close the
+    /// round; its rent goes back to whoever created it with the first ticket.
+    pub fn close_round(ctx: Context<CloseRound>, _round_id: u64) -> Result<()> {
+        let round = &ctx.accounts.round;
+        require!(round.status == RoundStatus::Settled, DrawError::WrongStatus);
+        require!(round.open_tickets == 0, DrawError::TicketsOpen);
         Ok(())
     }
 }
@@ -298,8 +350,14 @@ pub struct Round {
     pub winners: u32,
     pub share: u64,
     pub randomness: Pubkey,
+    /// Seed slot of the committed randomness; the reveal must match it.
+    pub commit_slot: u64,
     pub winning: [u8; PICKS],
     pub status: RoundStatus,
+    /// Paid the round's rent with the first ticket; gets it back at close_round.
+    pub creator: Pubkey,
+    /// Tickets not yet claimed or closed.
+    pub open_tickets: u32,
     pub bump: u8,
 }
 
@@ -332,6 +390,10 @@ pub struct Ticket {
 pub struct Initialize<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
+    #[account(constraint = program.programdata_address()? == Some(program_data.key()) @ DrawError::NotUpgradeAuthority)]
+    pub program: Program<'info, crate::program::DailyDraw>,
+    #[account(constraint = program_data.upgrade_authority_address == Some(admin.key()) @ DrawError::NotUpgradeAuthority)]
+    pub program_data: Account<'info, ProgramData>,
     #[account(init, payer = admin, space = 8 + Config::INIT_SPACE, seeds = [b"config"], bump)]
     pub config: Account<'info, Config>,
     pub mint: InterfaceAccount<'info, Mint>,
@@ -422,12 +484,13 @@ pub struct ScoreTickets<'info> {
 #[derive(Accounts)]
 #[instruction(round_id: u64)]
 pub struct Claim<'info> {
+    #[account(mut)]
     pub owner: Signer<'info>,
     #[account(seeds = [b"config"], bump = config.bump, has_one = mint)]
     pub config: Account<'info, Config>,
-    #[account(seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
+    #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
     pub round: Account<'info, Round>,
-    #[account(mut, has_one = owner, constraint = ticket.round == round_id @ DrawError::BadTicket)]
+    #[account(mut, has_one = owner, close = owner, constraint = ticket.round == round_id @ DrawError::BadTicket)]
     pub ticket: Account<'info, Ticket>,
     pub mint: InterfaceAccount<'info, Mint>,
     #[account(mut, seeds = [b"vault"], bump)]
@@ -435,6 +498,27 @@ pub struct Claim<'info> {
     #[account(mut, token::mint = mint, token::authority = owner, token::token_program = token_program)]
     pub owner_tokens: InterfaceAccount<'info, TokenAccount>,
     pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+#[instruction(round_id: u64)]
+pub struct CloseTicket<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
+    pub round: Account<'info, Round>,
+    #[account(mut, has_one = owner, close = owner, constraint = ticket.round == round_id @ DrawError::BadTicket)]
+    pub ticket: Account<'info, Ticket>,
+}
+
+#[derive(Accounts)]
+#[instruction(round_id: u64)]
+pub struct CloseRound<'info> {
+    /// CHECK: receives the round's rent; must be the round's creator.
+    #[account(mut, address = round.creator @ DrawError::NotCreator)]
+    pub creator: UncheckedAccount<'info>,
+    #[account(mut, close = creator, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
+    pub round: Account<'info, Round>,
 }
 
 #[event]
@@ -518,4 +602,16 @@ pub enum DrawError {
     NotAWinner,
     #[msg("Already claimed")]
     AlreadyClaimed,
+    #[msg("Randomness was re-committed after this round's commit")]
+    RandomnessExpired,
+    #[msg("The committed draw can still be revealed")]
+    RevealPending,
+    #[msg("Claim the prize first; claiming also returns the rent")]
+    UnclaimedPrize,
+    #[msg("Some tickets of this round are still open")]
+    TicketsOpen,
+    #[msg("Rent goes back to the round's creator")]
+    NotCreator,
+    #[msg("Only the program's upgrade authority can initialize")]
+    NotUpgradeAuthority,
 }

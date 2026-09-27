@@ -4,7 +4,13 @@ import com.solana.publickey.SolanaPublicKey
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Base64
 
 /** The app hand-encodes Anchor instructions; these pin them to the program's IDL. */
 class DrawProgramTest {
@@ -14,6 +20,7 @@ class DrawProgramTest {
     fun instructionDiscriminatorsMatchTheIdl() {
         assertArrayEquals(ints(139, 49, 209, 114, 88, 91, 77, 134), DrawProgram.discriminator("global", "enter"))
         assertArrayEquals(ints(62, 198, 214, 193, 213, 159, 108, 210), DrawProgram.discriminator("global", "claim"))
+        assertArrayEquals(ints(66, 209, 114, 197, 75, 27, 182, 117), DrawProgram.discriminator("global", "close_ticket"))
     }
 
     @Test
@@ -38,11 +45,11 @@ class DrawProgramTest {
     @Test
     fun pdasMatchTheNodeClient() = runBlocking {
         val who = SolanaPublicKey.from("CBCxy5PknwBZK8awoc3y54r5TTqAZEB7RYrGEtWHh3iL")
-        assertEquals("Hg5MZ2u7YyAX3tQG7whxJtZJnHVUjz7dvmgpRHPKUGBe", DrawProgram.config().base58())
-        assertEquals("GsQR2XDbsyxCB5zxL9PwaoQjNsLBA1QqkZ2iN4vdQjFF", DrawProgram.vault().base58())
-        assertEquals("AbTh231JeT1sqR3c8kH7HWaMVUBZJG2R56o1rX3oy4NB", DrawProgram.round(3).base58())
-        assertEquals("5wd6jhkbPAwyYySjSSssAM2df6fMBDW24VxgHZM2Vvmq", DrawProgram.seeker(who).base58())
-        assertEquals("982btUfupYdJCXvDesNXrMbVUpZCNfRvqHyye9SC6R5N", DrawProgram.ticket(3, who, 1).base58())
+        assertEquals("uXuUWGvgKzYrgmTrCoXEZ9W1sczs9kDSvtXSkGqL8yZ", DrawProgram.config().base58())
+        assertEquals("63Kb4wzsdRFEAsXq4teSdVr5uzUzvAuh9LBvfQhbWs6v", DrawProgram.vault().base58())
+        assertEquals("7CB3ARfrHWxBcAJmDHjbPB9T72yvo45TTHKpyvWZpU8j", DrawProgram.round(3).base58())
+        assertEquals("E5e7uixCyyXAxTxUzLxm59KWKwqF1qKQFkey8pPyiYoh", DrawProgram.seeker(who).base58())
+        assertEquals("341P856TkVi7Q7HtUsu5ANyNM8327J4VCWMzJ5yoqLhh", DrawProgram.ticket(3, who, 1).base58())
     }
 
     @Test
@@ -52,5 +59,45 @@ class DrawProgramTest {
         assertEquals(1L, c.roundAt(1120))
         assertEquals(1090L, c.closeTs(0))
         assertEquals(1120L, c.drawTs(0))
+    }
+
+    /** Round in the program's field order, including the fields the audit added. */
+    @Test
+    fun roundDecodesTheCurrentLayout() {
+        val buf = ByteBuffer.allocate(8 + 8 * 4 + 4 + 4 + 1 + 4 + 8 + 32 + 8 + 5 + 1 + 32 + 4 + 1).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(DrawProgram.discriminator("account", "Round"))
+        buf.putLong(42).putLong(1090).putLong(1120).putLong(9_000_000) // id, close, draw, pot
+        buf.putInt(3).putInt(3).put(1).putInt(2).putLong(4_500_000)    // tickets, scored, best, winners, share
+        buf.put(ByteArray(32)).putLong(777)                               // randomness, commit_slot
+        buf.put(ints(4, 10, 35, 78, 83)).put(3)                           // winning, status = Settled
+        buf.put(ByteArray(32)).putInt(1).put(255.toByte())                // creator, open_tickets, bump
+        val r = DrawRound.decode(buf.array())
+        assertEquals(42L, r.id)
+        assertEquals(4_500_000L, r.share)
+        assertEquals(listOf(4, 10, 35, 78, 83), r.winning)
+        assertEquals(RoundStatus.Settled, r.status)
+        assertEquals(1L, r.openTickets)
+    }
+
+    @Test
+    fun programErrorsAreReadFromEveryFailureShape() {
+        assertEquals(DrawError.TicketLimit, DrawError.from("transaction failed: {\"InstructionError\":[0,{\"Custom\":6008}]}"))
+        assertEquals(DrawError.EntriesClosed, DrawError.from("Transaction simulation failed: custom program error: 0x1774"))
+        assertEquals(DrawError.UnclaimedPrize, DrawError.from("AnchorError ... Error Code: UnclaimedPrize"))
+        assertEquals(DrawError.NotUpgradeAuthority, DrawError.from("{\"Custom\":6022}"))
+        assertNull(DrawError.from("{\"Custom\":1}"))
+        assertNull(DrawError.from("Blockhash not found"))
+    }
+
+    /** A real Seeker Genesis Token mint from mainnet (same fixture as the program's test). */
+    @Test
+    fun recognisesARealSgtFromMainnet() {
+        val fixture = javaClass.classLoader!!.getResource("sgt-member-mint.json")!!.readText()
+        fun field(name: String) = Regex("\"$name\":\\s*\"([^\"]+)\"").find(fixture)!!.groupValues[1]
+        val mint = SolanaPublicKey.from(field("mint"))
+        val data = Base64.getDecoder().decode(field("data"))
+        assertTrue(Sgt.isSeekerGenesisToken(mint, data))
+        assertFalse(Sgt.isSeekerGenesisToken(DrawProgram.PROGRAM_ID, data))
+        assertNull(Sgt.memberGroup(mint, ByteArray(82)))
     }
 }

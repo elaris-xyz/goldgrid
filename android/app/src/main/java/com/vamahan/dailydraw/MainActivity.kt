@@ -130,13 +130,14 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
             val left = s.ticketsLeft()
             Button(
                 onClick = { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) },
-                enabled = s.busy == null && (s.wallet == null || (open && s.selection.size == DrawProgram.PICKS && left > 0)),
+                enabled = s.busy == null && (s.wallet == null || (s.identity != null && open && s.selection.size == DrawProgram.PICKS && left > 0)),
                 colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
                 modifier = Modifier.fillMaxWidth().height(52.dp),
             ) {
                 Text(
                     when {
                         s.wallet == null -> "Connect wallet"
+                        s.identity == null && s.config?.requireSgt == true -> "Needs a Seeker Genesis Token"
                         !open -> "Entries closed — next round soon"
                         left == 0 -> "No tickets left this round"
                         s.selection.size < DrawProgram.PICKS -> "Pick ${DrawProgram.PICKS - s.selection.size} more"
@@ -156,6 +157,13 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                     colors = ButtonDefaults.buttonColors(containerColor = Win, contentColor = Ink),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Claim ${formatSkr(c.round.share)} SKR from round #${c.round.id}", fontWeight = FontWeight.Bold) }
+            }
+            if (s.closable.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = { vm.collect(sender) },
+                    enabled = s.busy == null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Get back the SOL of ${s.closable.size} finished ticket(s)") }
             }
             LastDraw(s)
             Spacer(Modifier.height(24.dp))
