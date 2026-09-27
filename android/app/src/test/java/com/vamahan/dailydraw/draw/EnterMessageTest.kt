@@ -1,7 +1,6 @@
 package com.vamahan.dailydraw.draw
 
 import com.solana.publickey.SolanaPublicKey
-import com.solana.transaction.Message
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -11,8 +10,9 @@ import org.junit.Test
 class EnterMessageTest {
     private val player = SolanaPublicKey.from("CBCxy5PknwBZK8awoc3y54r5TTqAZEB7RYrGEtWHh3iL")
 
+    /** The compiler the app sends with; web3-solana's Builder got the flags wrong. */
     private fun build(ix: com.solana.transaction.TransactionInstruction) =
-        Message.Builder().addInstruction(ix).setRecentBlockhash("11111111111111111111111111111111").build()
+        MessageCompiler.compile(player, listOf(ix), "11111111111111111111111111111111")
 
     /** Demo mode: the wallet is both `player` (signer) and `identity`, so it
      * must appear once, as the fee-paying signer. */
@@ -23,6 +23,31 @@ class EnterMessageTest {
         assertEquals(keys.size, keys.toSet().size)
         assertEquals(player.base58(), keys.first())
         assertEquals(1, message.signatureCount.toInt())
+    }
+
+    /** The player pays for the ticket and seeker accounts through a CPI, so it
+     * must stay a WRITABLE signer even though the same key is also passed as the
+     * read-only identity. The wallet rejected this with PrivilegeEscalation. */
+    @Test
+    fun demoEntryKeepsThePlayerWritable() = runBlocking {
+        val bytes = build(DrawProgram.enter(player, player, null, 3, 0, listOf(1, 2, 3, 4, 5))).serialize()
+        val (required, readonlySigned) = bytes[0].toInt() to bytes[1].toInt()
+        assertEquals(1, required)
+        assertEquals("the fee payer must be writable", 0, readonlySigned)
+    }
+
+    /** Every account the program writes must be writable in the compiled message:
+     * the wallet's copy had the ticket read-only and the CPI creating it failed. */
+    @Test
+    fun demoEntryKeepsEveryWrittenAccountWritable() = runBlocking {
+        val message = build(DrawProgram.enter(player, player, null, 3, 0, listOf(1, 2, 3, 4, 5)))
+        val bytes = message.serialize()
+        val keys = message.accounts.map { it.base58() }
+        val firstReadonly = keys.size - bytes[2].toInt()
+        for (written in listOf(DrawProgram.config(), DrawProgram.round(3), DrawProgram.seeker(player), DrawProgram.ticket(3, player, 0))) {
+            val i = keys.indexOf(written.base58())
+            assertTrue("${written.base58()} at $i of $keys must be writable (readonly from $firstReadonly)", i in 1 until firstReadonly)
+        }
     }
 
     /** SGT mode: the SGT mint is the identity and its token account is passed;

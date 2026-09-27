@@ -106,9 +106,12 @@ class SolanaRpc(private val url: String) {
         return result.jsonObject["value"]!!.jsonArray.map { decode(it) }
     }
 
-    suspend fun latestBlockhash(): String {
+    /** A recent blockhash and the slot the node answered at (a wallet's minContextSlot). */
+    suspend fun latestBlockhash(): Pair<String, Long> {
         val result = call("getLatestBlockhash", buildJsonArray { add(buildJsonObject { put("commitment", "confirmed") }) })
-        return result.jsonObject["value"]!!.jsonObject["blockhash"]!!.jsonPrimitive.content
+        val hash = result.jsonObject["value"]!!.jsonObject["blockhash"]!!.jsonPrimitive.content
+        val slot = result.jsonObject["context"]!!.jsonObject["slot"]!!.jsonPrimitive.content.toLong()
+        return hash to slot
     }
 
     /**
@@ -136,6 +139,24 @@ class SolanaRpc(private val url: String) {
     }
 
     /** True once the transaction is confirmed; throws if it landed with an error. */
+    /** Broadcasts a signed transaction; preflight surfaces program errors before it lands. */
+    suspend fun sendTransaction(signed: ByteArray): String {
+        val result = call("sendTransaction", buildJsonArray {
+            add(Base64.encodeToString(signed, Base64.NO_WRAP))
+            add(buildJsonObject { put("encoding", "base64"); put("preflightCommitment", "confirmed"); put("maxRetries", 0) })
+        })
+        return result.jsonPrimitive.content
+    }
+
+    /** False once no validator will accept a transaction built on this blockhash. */
+    suspend fun isBlockhashValid(blockhash: String): Boolean {
+        val result = call("isBlockhashValid", buildJsonArray {
+            add(blockhash)
+            add(buildJsonObject { put("commitment", "confirmed") })
+        })
+        return result.jsonObject["value"]!!.jsonPrimitive.content.toBoolean()
+    }
+
     suspend fun isConfirmed(signature: String): Boolean {
         val result = call("getSignatureStatuses", buildJsonArray { add(buildJsonArray { add(signature) }) })
         val status = result.jsonObject["value"]!!.jsonArray[0]

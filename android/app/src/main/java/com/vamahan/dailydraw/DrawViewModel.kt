@@ -1,6 +1,7 @@
 package com.vamahan.dailydraw
 
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.funkatronics.encoders.Base58
@@ -10,7 +11,6 @@ import com.solana.mobilewalletadapter.clientlib.MobileWalletAdapter
 import com.solana.mobilewalletadapter.clientlib.Solana
 import com.solana.mobilewalletadapter.clientlib.TransactionResult
 import com.solana.publickey.SolanaPublicKey
-import com.solana.transaction.Message
 import com.solana.transaction.Transaction
 import com.solana.transaction.TransactionInstruction
 import com.vamahan.dailydraw.draw.DrawConfig
@@ -18,6 +18,7 @@ import com.vamahan.dailydraw.draw.DrawError
 import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
+import com.vamahan.dailydraw.draw.MessageCompiler
 import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.draw.SeekerState
 import com.vamahan.dailydraw.draw.Sgt
@@ -210,9 +211,13 @@ class DrawViewModel : ViewModel() {
                 }
             }
             is TransactionResult.NoWalletFound -> _state.update { it.copy(busy = null, message = "No Solana wallet found. Install Phantom or Solflare.") }
-            is TransactionResult.Failure -> _state.update { it.copy(busy = null, message = "Wallet: ${result.e.message}") }
+            is TransactionResult.Failure -> _state.update {
+                it.copy(busy = null, message = if (authorizationRefused(result.e)) WALLET_REFUSED else "Wallet: ${result.e.message}")
+            }
         }
     }
+
+    private fun authorizationRefused(e: Exception) = "authorization request failed" in (e.message ?: "").lowercase()
 
     fun enter(sender: ActivityResultSender) = viewModelScope.launch {
         val s = _state.value
@@ -268,48 +273,98 @@ class DrawViewModel : ViewModel() {
         _state.update { it.copy(busy = busy, message = null) }
         try {
             val instructions = build()
+            val payer = SolanaPublicKey.from(_state.value.wallet ?: return false)
+            // Phantom speaks the legacy protocol, where a session holding a saved
+            // token opens with `reauthorize`, and it refuses that even for a token it
+            // issued a minute earlier. Retrying in a second session raced the wallet's
+            // closing screen and hung on a black page. Without a token every session
+            // opens with a plain `authorize`, which the wallet accepts, in ONE trip.
+            wallet.authToken = null
+            var blockhash = ""
+            // The wallet only signs; the app broadcasts. Phantom's own send went
+            // through its servers, which failed from this network, and it reported a
+            // signature for a transaction that never reached the chain.
             val result = wallet.transact(sender) {
                 // Fetched once the wallet is open and authorized: a blockhash taken
                 // before the approval screen can expire while the person reads it.
-                val message = Message.Builder().apply { instructions.forEach { addInstruction(it) } }
-                    .setRecentBlockhash(rpc.latestBlockhash()).build()
-                signAndSendTransactions(arrayOf(Transaction(message).serialize()))
+                blockhash = rpc.latestBlockhash().first
+                val message = MessageCompiler.compile(payer, instructions, blockhash)
+                signTransactions(arrayOf(Transaction(message).serialize()))
             }
-            val signature = when (result) {
-                is TransactionResult.Success -> result.payload.signatures.first()
+            val signed = when (result) {
+                is TransactionResult.Success -> result.payload.signedPayloads.first()
                 is TransactionResult.NoWalletFound -> throw IllegalStateException("No Solana wallet found")
                 is TransactionResult.Failure -> throw result.e
             }
-            val sig = Base58.encodeToString(signature)
-            repeat(30) {
-                if (rpc.isConfirmed(sig)) {
-                    _state.update { it.copy(busy = null, message = done) }
-                    runCatching { refresh(fullClock = false) }
-                    return true
-                }
-                delay(1000)
+            // A legacy transaction starts with the signature count, then the signatures.
+            val sig = Base58.encodeToString(signed.copyOfRange(1, 65))
+            Log.i(TAG, "signed by the wallet: ${android.util.Base64.encodeToString(signed, android.util.Base64.NO_WRAP)}")
+            signedBlockhash(signed)?.let { returned ->
+                if (returned != blockhash) Log.w(TAG, "wallet replaced the blockhash: sent $blockhash, signed $returned")
             }
-            _state.update { it.copy(busy = null, message = "Sent, not confirmed yet: ${sig.take(8)}…") }
+            rpc.sendTransaction(signed)
+            // Resend until it confirms or its blockhash dies; a dropped packet is
+            // routine on a mobile link, a resend of the same bytes cannot land twice.
+            while (true) {
+                repeat(4) {
+                    if (rpc.isConfirmed(sig)) {
+                        _state.update { it.copy(busy = null, message = done) }
+                        runCatching { refresh(fullClock = false) }
+                        return true
+                    }
+                    delay(1000)
+                }
+                if (!rpc.isBlockhashValid(blockhash)) break
+                runCatching { rpc.sendTransaction(signed) }
+            }
+            if (rpc.isConfirmed(sig)) {
+                _state.update { it.copy(busy = null, message = done) }
+                runCatching { refresh(fullClock = false) }
+                return true
+            }
+            _state.update { it.copy(busy = null, message = "The approval took too long and the transaction expired. Please try again.") }
         } catch (e: Exception) {
+            Log.w(TAG, "send failed", e)
             _state.update { it.copy(busy = null, message = friendly(e)) }
         }
         return false
     }
+
+    /** The recent blockhash inside a signed single-signer legacy transaction. */
+    private fun signedBlockhash(signed: ByteArray): String? = runCatching {
+        var i = 1 + 64 * signed[0].toInt() + 3 // signatures, then the 3-byte message header
+        var keys = 0
+        var shift = 0
+        while (true) { // compact-u16 account count
+            val b = signed[i++].toInt() and 0xff
+            keys = keys or ((b and 0x7f) shl shift)
+            if (b and 0x80 == 0) break
+            shift += 7
+        }
+        i += 32 * keys
+        Base58.encodeToString(signed.copyOfRange(i, i + 32))
+    }.getOrNull()
 
     private fun friendly(e: Exception): String {
         val text = e.message ?: e.toString()
         DrawError.from(text)?.let { return it.userMessage }
         return when {
             "insufficient" in text.lowercase() -> "Not enough devnet SOL for the fee."
-            "blockhash" in text.lowercase() -> "The transaction expired before it was sent. Try again."
+            // Match the RPC's own words: a simulation error carries "replacementBlockhash"
+            // in its payload, and a bare "blockhash" match called a program error expired.
+            "blockhash not found" in text.lowercase() -> "The transaction expired before it was sent. Try again."
+            authorizationRefused(e) -> WALLET_REFUSED
             else -> text.take(120)
         }
     }
 
     private companion object {
+        const val TAG = "DailyDraw"
         /** Rounds of tickets the app watches: a day of demo rounds, three weeks of nightly ones. */
         const val RECENT_ROUNDS = 20L
         const val MAX_CLOSES_PER_TX = 8
+        /** The wallet said no without saying why: most often a wallet still on mainnet. */
+        const val WALLET_REFUSED = "The wallet refused. In Phantom turn on Settings → Developer Settings → Testnet Mode (Solana Devnet), then try again."
     }
 }
 
