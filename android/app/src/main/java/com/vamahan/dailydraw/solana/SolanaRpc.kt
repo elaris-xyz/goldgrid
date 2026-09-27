@@ -138,7 +138,6 @@ class SolanaRpc(private val url: String) {
         return result.jsonObject["value"]!!.jsonPrimitive.long
     }
 
-    /** True once the transaction is confirmed; throws if it landed with an error. */
     /** Broadcasts a signed transaction; preflight surfaces program errors before it lands. */
     suspend fun sendTransaction(signed: ByteArray): String {
         val result = call("sendTransaction", buildJsonArray {
@@ -157,6 +156,7 @@ class SolanaRpc(private val url: String) {
         return result.jsonObject["value"]!!.jsonPrimitive.content.toBoolean()
     }
 
+    /** True once the transaction is confirmed; throws if it landed with an error. */
     suspend fun isConfirmed(signature: String): Boolean {
         val result = call("getSignatureStatuses", buildJsonArray { add(buildJsonArray { add(signature) }) })
         val status = result.jsonObject["value"]!!.jsonArray[0]

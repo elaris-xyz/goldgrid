@@ -31,15 +31,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -58,14 +62,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import com.vamahan.dailydraw.draw.DrawProgram
-import com.vamahan.dailydraw.draw.DrawRound
-import com.vamahan.dailydraw.draw.RoundStatus
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
 private val Gold = Color(0xFFF5C451)
 private val Ink = Color(0xFF0E0F13)
 private val Card = Color(0xFF1A1C23)
+private val CardHigh = Color(0xFF242732)
 private val Muted = Color(0xFF8A8F9C)
 private val Win = Color(0xFF4ADE80)
 
@@ -94,6 +97,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * One screen, top to bottom in the order a player asks: what is happening now,
+ * what do I do, and how did my tickets do. Every action shows its own progress on
+ * its own button; notices go to a snackbar instead of a line of raw text.
+ */
 @Composable
 fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
     val s by vm.state.collectAsStateWithLifecycle()
@@ -104,68 +112,41 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
             delay(250)
         }
     }
-    ShakeToPick { vm.quickPick() }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(s.message) {
+        s.message?.let {
+            vm.messageShown()
+            snackbar.showSnackbar(it)
+        }
+    }
+    val config = s.config
+    val open = config != null && now < config.closeTs(s.roundId)
+    val left = if (s.wallet == null) 1 else s.ticketsLeft()
+    val picking = open && left > 0
+    if (picking) ShakeToPick { vm.quickPick() }
 
-    Surface(Modifier.fillMaxSize(), color = Ink) {
+    Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
+                .padding(padding)
                 .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Header(s, onConnect = { vm.connect(sender) })
-            TonightCard(s, now)
-            s.message?.let {
-                Text(it, color = Gold, fontSize = 13.sp, modifier = Modifier.clickable { vm.dismissMessage() })
+            if (s.networkTrouble) {
+                Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
             }
-            s.busy?.let { Text(it, color = Muted, fontSize = 13.sp) }
-            val open = s.config != null && now < (s.config?.closeTs(s.roundId) ?: 0)
-            NumberGrid(s.selection, enabled = open) { vm.toggle(it) }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = { vm.quickPick() }, enabled = open, modifier = Modifier.weight(1f)) { Text("Quick pick") }
-                OutlinedButton(onClick = { vm.clearSelection() }, enabled = s.selection.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("Clear") }
+            NowCard(s, now, open, left)
+            if (picking) {
+                PickArea(s, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection) {
+                    if (s.wallet == null) vm.connect(sender) else vm.enter(sender)
+                }
             }
-            val left = s.ticketsLeft()
-            Button(
-                onClick = { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) },
-                enabled = s.busy == null && (s.wallet == null || (s.identity != null && open && s.selection.size == DrawProgram.PICKS && left > 0)),
-                colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-            ) {
-                Text(
-                    when {
-                        s.wallet == null -> "Connect wallet"
-                        s.identity == null && s.config?.requireSgt == true -> "Needs a Seeker Genesis Token"
-                        !open -> "Entries closed — next round soon"
-                        left == 0 -> "No tickets left this round"
-                        s.selection.size < DrawProgram.PICKS -> "Pick ${DrawProgram.PICKS - s.selection.size} more"
-                        else -> "Enter tonight's draw — free"
-                    },
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            if (s.wallet != null) {
-                Text("Tickets left this round: $left · streak ${s.seeker?.streak ?: 0}", color = Muted, fontSize = 12.sp)
-            }
-            MyTickets(s)
-            s.claimable.forEach { c ->
-                Button(
-                    onClick = { vm.claim(sender, c) },
-                    enabled = s.busy == null,
-                    colors = ButtonDefaults.buttonColors(containerColor = Win, contentColor = Ink),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Claim ${formatSkr(c.round.share)} SKR from round #${c.round.id}", fontWeight = FontWeight.Bold) }
-            }
-            if (s.closable.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = { vm.collect(sender) },
-                    enabled = s.busy == null,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Get back the SOL of ${s.closable.size} finished ticket(s)") }
-            }
-            LastDraw(s)
+            Results(s, now, onClaim = { vm.claim(sender, it) }, onCollect = { vm.collect(sender) }, onRevealed = vm::revealed)
+            HowItWorks()
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -176,18 +157,22 @@ private fun Header(s: UiState, onConnect: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
             Text("Daily Draw", color = Gold, fontSize = 24.sp, fontWeight = FontWeight.Black)
-            Text("Free for Seeker owners · devnet", color = Muted, fontSize = 12.sp)
+            Text("Free draw for Seeker owners · devnet demo", color = Muted, fontSize = 12.sp)
         }
         val w = s.wallet
         Box(
             Modifier
                 .clip(RoundedCornerShape(20.dp))
                 .border(1.dp, Gold.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                .clickable(enabled = w == null) { onConnect() }
+                .clickable(enabled = w == null && "connect" !in s.pending) { onConnect() }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             Text(
-                if (w == null) "Connect" else "${w.take(4)}…${w.takeLast(4)} · ${s.skr?.let(::formatSkr) ?: "0"} SKR",
+                when {
+                    w != null -> "${w.take(4)}…${w.takeLast(4)} · ${formatSkr(s.skr ?: 0)} SKR"
+                    "connect" in s.pending -> "Connecting…"
+                    else -> "Connect wallet"
+                },
                 color = Color.White, fontSize = 12.sp,
             )
         }
@@ -195,11 +180,11 @@ private fun Header(s: UiState, onConnect: () -> Unit) {
 }
 
 @Composable
-private fun TonightCard(s: UiState, now: Long) {
+private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
     val config = s.config
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (config == null) {
             Text(
@@ -209,26 +194,73 @@ private fun TonightCard(s: UiState, now: Long) {
             )
             return@Column
         }
-        val close = config.closeTs(s.roundId)
-        val draw = config.drawTs(s.roundId)
-        val (label, secs) = when {
-            now < close -> "Entries close in" to close - now
-            now < draw -> "Draw in" to draw - now
-            else -> "Drawing" to 0L
-        }
-        Text("Round #${s.roundId}", color = Muted, fontSize = 12.sp)
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(label, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
-            Text("%02d:%02d".format(secs / 60, secs % 60), color = Gold, fontSize = 34.sp, fontWeight = FontWeight.Black)
+        val secs = ((if (open) config.closeTs(s.roundId) else config.drawTs(s.roundId)) - now).coerceAtLeast(0)
+        Text("Round #${s.roundId} · a new round every ${config.roundSecs / 60} min in this demo", color = Muted, fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (open) "Entries close in" else "Numbers drawn in", color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
+            Text(clock(secs), color = Gold, fontSize = 34.sp, fontWeight = FontWeight.Black)
         }
         val pot = s.round?.pot ?: config.carry
-        Text("Pot ${formatSkr(pot)} SKR · ${s.round?.tickets ?: 0} tickets", color = Color.White, fontSize = 15.sp)
-        Text("Every ticket adds ${formatSkr(config.perTicketBonus)} SKR from the sponsor. Entry is free.", color = Muted, fontSize = 12.sp)
+        Text("Prize pot ${formatSkr(pot)} SKR · ${s.round?.tickets ?: 0} ticket(s)", color = Color.White, fontSize = 15.sp)
+        val mine = s.resultsIn(s.roundId)
+        Text(
+            when {
+                !open -> "Entries are closed. The winning numbers are drawn on-chain when the timer ends."
+                s.wallet == null -> "Pick 5 numbers, then connect a wallet to enter. Entry is free."
+                left > 0 && mine.isEmpty() -> "Pick 5 numbers below. Entry is free — the sponsor adds ${formatSkr(config.perTicketBonus)} SKR to the pot per ticket."
+                left > 0 -> "You're in. Your streak earned you another ticket — pick again below."
+                else -> "You're in! Your result appears below when the draw ends."
+            },
+            color = Muted, fontSize = 13.sp,
+        )
+        mine.forEach { Balls(it.picks) }
     }
 }
 
 @Composable
-private fun NumberGrid(selection: Set<Int>, enabled: Boolean, onToggle: (Int) -> Unit) {
+private fun PickArea(
+    s: UiState,
+    onToggle: (Int) -> Unit,
+    onQuickPick: () -> Unit,
+    onClear: () -> Unit,
+    onEnter: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Your numbers  ${s.selection.size}/${DrawProgram.PICKS} · or shake the phone", color = Color.White, fontWeight = FontWeight.Bold)
+        NumberGrid(s.selection, onToggle)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onQuickPick, modifier = Modifier.weight(1f)) { Text("Quick pick") }
+            OutlinedButton(onClick = onClear, enabled = s.selection.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("Clear") }
+        }
+        val entering = "enter" in s.pending
+        val needsSgt = s.wallet != null && s.identity == null && s.config?.requireSgt == true
+        val ready = s.selection.size == DrawProgram.PICKS
+        Button(
+            onClick = onEnter,
+            enabled = !entering && "connect" !in s.pending && !needsSgt && (s.wallet == null || ready),
+            colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+        ) {
+            if (entering) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(
+                when {
+                    entering -> "Confirm in your wallet, then wait a moment…"
+                    s.wallet == null -> "Connect wallet to enter"
+                    needsSgt -> "Needs a Seeker Genesis Token"
+                    !ready -> "Pick ${DrawProgram.PICKS - s.selection.size} more"
+                    else -> "Enter round #${s.roundId} — free"
+                },
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NumberGrid(selection: Set<Int>, onToggle: (Int) -> Unit) {
     val haptics = LocalHapticFeedback.current
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         (1..DrawProgram.MAX_NUMBER).chunked(9).forEach { row ->
@@ -241,13 +273,13 @@ private fun NumberGrid(selection: Set<Int>, enabled: Boolean, onToggle: (Int) ->
                             .aspectRatio(1f)
                             .clip(CircleShape)
                             .background(if (on) Gold else Card)
-                            .clickable(enabled = enabled) {
+                            .clickable {
                                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 onToggle(n)
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("$n", color = if (on) Ink else if (enabled) Color.White else Muted, fontSize = 13.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                        Text("$n", color = if (on) Ink else Color.White, fontSize = 13.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
                 repeat(9 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -257,54 +289,144 @@ private fun NumberGrid(selection: Set<Int>, enabled: Boolean, onToggle: (Int) ->
 }
 
 @Composable
-private fun Balls(numbers: List<Int>, highlight: Set<Int> = emptySet()) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        numbers.forEach { n ->
-            val hit = n in highlight
-            Box(
-                Modifier.size(34.dp).clip(CircleShape).background(if (hit) Win else Card).border(1.dp, Gold.copy(alpha = 0.4f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) { Text("$n", color = if (hit) Ink else Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
+private fun Results(
+    s: UiState,
+    now: Long,
+    onClaim: (MyResult) -> Unit,
+    onCollect: () -> Unit,
+    onRevealed: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Your tickets", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        when {
+            s.wallet == null -> Text("Connect a wallet to see your tickets and results.", color = Muted, fontSize = 13.sp)
+            s.results.isEmpty() -> Text("No tickets yet. After each draw your result shows up here.", color = Muted, fontSize = 13.sp)
+        }
+        val returnable = s.results.count { it.canReturnDeposit }
+        if (returnable > 0) {
+            val busy = "collect" in s.pending
+            OutlinedButton(onClick = onCollect, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (busy) "Returning deposits…" else "Get back the SOL deposit of $returnable finished ticket(s)")
+            }
+        }
+        s.results.take(12).forEach { r ->
+            ResultCard(r, now, s, pending = r.key in s.pending, fresh = r.key in s.freshlyDrawn, onClaim = { onClaim(r) }, onRevealed = { onRevealed(r.key) })
         }
     }
 }
 
 @Composable
-private fun MyTickets(s: UiState) {
-    val mine = s.ticketsInRound(s.roundId)
-    if (mine.isEmpty()) return
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Your tickets in round #${s.roundId}", color = Color.White, fontWeight = FontWeight.Bold)
-        mine.forEach { Balls(it.picks) }
-    }
-}
-
-@Composable
-private fun LastDraw(s: UiState) {
-    val r: DrawRound = s.lastRound ?: return
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Last draw · round #${r.id}", color = Color.White, fontWeight = FontWeight.Bold)
-        when (r.status) {
-            RoundStatus.Open, RoundStatus.Committed -> Text("Waiting for the draw to run…", color = Muted)
-            else -> {
-                Balls(r.winning)
-                Text(
-                    if (r.status != RoundStatus.Settled) "Counting tickets…"
-                    else if (r.best == 0) "Nobody matched — ${formatSkr(r.pot)} SKR carries to the next round"
-                    else "Best match ${r.best} · ${r.winners} winner(s) · ${formatSkr(r.share)} SKR each",
-                    color = Muted, fontSize = 13.sp,
-                )
-                s.ticketsInRound(r.id).forEach { t ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Balls(t.picks, highlight = r.winning.toSet())
-                        Spacer(Modifier.width(8.dp))
-                        if (t.scored) Text("${t.matches} ✓", color = if (t.matches > 0 && t.matches == r.best) Win else Muted)
-                    }
+private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fresh: Boolean, onClaim: () -> Unit, onRevealed: () -> Unit) {
+    val won = r.outcome == Outcome.Won || r.outcome == Outcome.Claimed
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (won) Win.copy(alpha = 0.10f) else Card)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            val drawIn = (s.config?.drawTs(r.round) ?: now) - now
+            val (label, color) = when (r.outcome) {
+                Outcome.Waiting -> "Draw in ${clock(drawIn.coerceAtLeast(0))}" to Muted
+                Outcome.Drawing -> "Drawing the numbers…" to Gold
+                Outcome.NoMatch -> "No match this time" to Muted
+                Outcome.Matched -> "${r.matches} matched · the winner had ${r.best}" to Muted
+                Outcome.Won -> "You won ${formatSkr(r.prize)} SKR!" to Win
+                Outcome.Claimed -> "Won ${formatSkr(r.prize)} SKR · claimed ✓" to Win
+            }
+            if (r.outcome == Outcome.Drawing) {
+                CircularProgressIndicator(Modifier.size(14.dp), color = Gold, strokeWidth = 2.dp)
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(label, color = color, fontSize = 13.sp, fontWeight = if (won) FontWeight.Bold else FontWeight.Normal)
+        }
+        if (r.winning.isNotEmpty()) {
+            Text("Winning numbers", color = Muted, fontSize = 12.sp)
+            RevealBalls(r.winning, animate = fresh, onDone = onRevealed)
+        }
+        Text("Your numbers", color = Muted, fontSize = 12.sp)
+        Balls(r.picks, highlight = r.hits)
+        if (r.canClaim) {
+            Button(
+                onClick = onClaim,
+                enabled = !pending,
+                colors = ButtonDefaults.buttonColors(containerColor = Win, contentColor = Ink),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                if (pending) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
                 }
+                Text(if (pending) "Claiming — confirm in your wallet…" else "Claim ${formatSkr(r.prize)} SKR", fontWeight = FontWeight.Bold)
             }
         }
     }
 }
+
+/** The draw's moment: a fresh result turns its balls over one by one, each with a tap. */
+@Composable
+private fun RevealBalls(numbers: List<Int>, animate: Boolean, onDone: () -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    var shown by remember(numbers) { mutableIntStateOf(if (animate) 0 else numbers.size) }
+    LaunchedEffect(numbers, animate) {
+        if (!animate) return@LaunchedEffect
+        for (i in 1..numbers.size) {
+            delay(550)
+            shown = i
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+        onDone()
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        numbers.forEachIndexed { i, n ->
+            Ball(if (i < shown) "$n" else "?", fill = if (i < shown) Gold else CardHigh, text = if (i < shown) Ink else Muted)
+        }
+    }
+}
+
+@Composable
+private fun Balls(numbers: List<Int>, highlight: Set<Int> = emptySet()) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        numbers.forEach { n ->
+            val hit = n in highlight
+            Ball("$n", fill = if (hit) Win else CardHigh, text = if (hit) Ink else Color.White)
+        }
+    }
+}
+
+@Composable
+private fun Ball(label: String, fill: Color, text: Color) {
+    Box(
+        Modifier.size(36.dp).clip(CircleShape).background(fill).border(1.dp, Gold.copy(alpha = 0.35f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, color = text, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
+}
+
+@Composable
+private fun HowItWorks() {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("How it works", color = Color.White, fontWeight = FontWeight.Bold)
+        listOf(
+            "Pick 5 numbers from 1 to 85. One free ticket per round — per Seeker Genesis Token on mainnet.",
+            "Play every day: each 7-day streak adds a ticket, up to 5.",
+            "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us.",
+            "The best match wins the pot and ties split it. No match? The pot rolls over.",
+            "This demo runs on devnet with a round every few minutes; prizes are test SKR.",
+        ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
+    }
+}
+
+private fun clock(secs: Long) = "%02d:%02d".format(secs / 60, secs % 60)
 
 /** A firm shake picks five random numbers, the phone-native quick pick. */
 @Composable

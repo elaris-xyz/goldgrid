@@ -1,8 +1,9 @@
 package com.vamahan.dailydraw
 
+import android.app.Application
 import android.net.Uri
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.funkatronics.encoders.Base58
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
@@ -19,7 +20,6 @@ import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
 import com.vamahan.dailydraw.draw.MessageCompiler
-import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.draw.SeekerState
 import com.vamahan.dailydraw.draw.Sgt
 import com.vamahan.dailydraw.solana.SolanaRpc
@@ -30,8 +30,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-data class Claimable(val ticket: DrawTicket, val round: DrawRound)
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** Who the program counts as "one Seeker": the SGT mint, or the wallet in demo mode. */
 data class Identity(val key: String, val sgtTokens: String?)
@@ -39,38 +39,41 @@ data class Identity(val key: String, val sgtTokens: String?)
 data class UiState(
     val wallet: String? = null,
     val identity: Identity? = null,
-    val lamports: Long? = null,
     val skr: Long? = null,
     /** chain time minus device time, so countdowns follow the program's clock. */
     val clockOffset: Long = 0,
     val config: DrawConfig? = null,
     /** The RPC answered but the program's config account is not there. */
     val programMissing: Boolean = false,
+    /** Several polls in a row failed; the screen says so instead of showing raw errors. */
+    val networkTrouble: Boolean = false,
     /** The program that owns the prize mint (classic SPL Token or Token-2022). */
     val tokenProgram: String? = null,
     val roundId: Long = 0,
     val round: DrawRound? = null,
-    val lastRound: DrawRound? = null,
-    val myTickets: List<DrawTicket> = emptyList(),
-    val claimable: List<Claimable> = emptyList(),
-    /** Finished tickets with nothing to claim, whose rent can come back. */
-    val closable: List<Claimable> = emptyList(),
     val seeker: SeekerState? = null,
+    /** The player's tickets and results, newest first, chain merged with the device's memory. */
+    val results: List<MyResult> = emptyList(),
+    /** Results that became known while the app was open: they get the reveal. */
+    val freshlyDrawn: Set<String> = emptySet(),
     val selection: Set<Int> = emptySet(),
-    val busy: String? = null,
+    /** Actions waiting for the wallet or the chain: "enter", "collect", or a result key. */
+    val pending: Set<String> = emptySet(),
+    /** One-shot notice for the snackbar. */
     val message: String? = null,
 ) {
     fun chainNow() = System.currentTimeMillis() / 1000 + clockOffset
-    fun ticketsInRound(round: Long) = myTickets.filter { it.round == round }
     fun ticketsLeft(): Int {
         val s = seeker ?: return 1
         val (used, allowed) = s.ticketsAllowedIn(roundId)
         return (allowed - used).coerceAtLeast(0)
     }
+    fun resultsIn(round: Long) = results.filter { it.round == round }
 }
 
-class DrawViewModel : ViewModel() {
+class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private val rpc = SolanaRpc(BuildConfig.RPC_URL)
+    private val store = ResultStore(app)
     private val wallet = MobileWalletAdapter(
         connectionIdentity = ConnectionIdentity(
             identityUri = Uri.parse("https://github.com/vamahan"),
@@ -82,21 +85,31 @@ class DrawViewModel : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
     private var poller: Job? = null
-    /** Ticket PDAs by (round, index) for the current identity; derivation is not free. */
+    /** PDAs by (round, index) for the current identity, and the player's token account. */
     private val ticketAddresses = HashMap<Pair<Long, Int>, String>()
+    private var tokenAccount: String? = null
 
     fun start() {
         if (poller?.isActive == true) return
         poller = viewModelScope.launch {
             var tick = 0
+            var failures = 0
             while (isActive) {
-                try {
-                    refresh(fullClock = tick % 10 == 0)
+                val wait = try {
+                    refresh(fullClock = tick % 12 == 0)
+                    failures = 0
+                    _state.update { it.copy(networkTrouble = false) }
+                    POLL_MS
                 } catch (e: Exception) {
-                    _state.update { it.copy(message = "Network: ${e.message?.take(80)}") }
+                    // The public devnet RPC rate-limits by IP (429), and a phone's link
+                    // drops: back off quietly and only say so when it persists.
+                    failures++
+                    Log.w(TAG, "poll failed ($failures)", e)
+                    _state.update { it.copy(networkTrouble = failures >= 3) }
+                    minOf(POLL_MS shl minOf(failures, 3), 30_000L)
                 }
                 tick++
-                delay(4000)
+                delay(wait)
             }
         }
     }
@@ -105,58 +118,99 @@ class DrawViewModel : ViewModel() {
         poller?.cancel()
     }
 
+    /**
+     * One poll in (usually) one RPC call: the config, this round and the last,
+     * the seeker, the prize token account and the player's recent ticket PDAs all
+     * go into a single getMultipleAccounts. Seven calls every four seconds ran
+     * straight into devnet's per-IP limit.
+     */
     private suspend fun refresh(fullClock: Boolean) {
         if (fullClock) {
             val chain = rpc.chainTime()
             _state.update { it.copy(clockOffset = chain - System.currentTimeMillis() / 1000) }
         }
-        val raw = rpc.accountData(DrawProgram.config().base58())
-        if (raw == null) {
-            _state.update { it.copy(programMissing = true) }
-            return
+        val known = _state.value.config ?: run {
+            val raw = rpc.accountData(DrawProgram.config().base58())
+            if (raw == null) {
+                _state.update { it.copy(programMissing = true) }
+                return
+            }
+            DrawConfig.decode(raw)
         }
-        val config = DrawConfig.decode(raw)
-        val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(config.mint.base58())
+        val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(known.mint.base58())
         val now = _state.value.chainNow()
-        val id = config.roundAt(now)
-        val (current, previous) = rpc.multipleAccounts(
-            listOf(DrawProgram.round(id).base58(), DrawProgram.round(id - 1).base58())
-        ).map { data -> data?.let(DrawRound::decode) }
-        _state.update {
-            it.copy(
-                config = config, programMissing = false, tokenProgram = tokenProgram, roundId = id, round = current,
-                lastRound = previous ?: it.lastRound.takeIf { r -> r?.id == id - 1 },
-            )
-        }
+        val id = known.roundAt(now)
 
-        val owner = _state.value.wallet ?: return
-        val identity = _state.value.identity ?: resolveIdentity(owner, config) ?: return
-        val identityKey = SolanaPublicKey.from(identity.key)
-
-        // Tickets are PDAs of (round, identity, index): read the recent ones
-        // directly instead of scanning every account of the program.
-        val slots = (id - RECENT_ROUNDS + 1..id).flatMap { r -> (0 until DrawProgram.MAX_TICKETS_PER_ROUND).map { r to it } }
-        val addresses = slots.map { key -> ticketAddresses.getOrPut(key) { DrawProgram.ticket(key.first, identityKey, key.second).base58() } }
-        val tickets = rpc.multipleAccounts(addresses).zip(addresses)
-            .mapNotNull { (data, address) -> data?.let { DrawTicket.decode(address, it) } }
-            .filter { it.owner.base58() == owner }
-            .sortedByDescending { it.round }
-        val roundIds = tickets.map { it.round }.distinct()
-        val rounds = rpc.multipleAccounts(roundIds.map { DrawProgram.round(it).base58() })
-            .zip(roundIds).mapNotNull { (data, rid) -> data?.let { rid to DrawRound.decode(it) } }.toMap()
-        val finished = tickets.mapNotNull { t -> rounds[t.round]?.takeIf { it.status == RoundStatus.Settled }?.let { Claimable(t, it) } }
-        val (claimable, closable) = finished.partition { (t, r) -> r.best > 0 && t.matches == r.best && !t.claimed }
-
-        val ownerKey = SolanaPublicKey.from(owner)
-        val seeker = rpc.accountData(DrawProgram.seeker(identityKey).base58())?.let(SeekerState::decode)
-        val skr = tokenProgram?.let { tp ->
-            rpc.tokenBalance(DrawProgram.associatedTokenAccount(ownerKey, config.mint, SolanaPublicKey.from(tp)).base58())
+        val owner = _state.value.wallet
+        val identity = owner?.let { _state.value.identity ?: resolveIdentity(it, known) }
+        val identityKey = identity?.let { SolanaPublicKey.from(it.key) }
+        if (owner != null && tokenAccount == null && tokenProgram != null) {
+            tokenAccount = DrawProgram.associatedTokenAccount(
+                SolanaPublicKey.from(owner), known.mint, SolanaPublicKey.from(tokenProgram),
+            ).base58()
         }
-        val lamports = rpc.lamports(owner)
-        _state.update {
-            it.copy(myTickets = tickets, claimable = claimable, closable = closable, seeker = seeker, skr = skr, lamports = lamports)
+        val slots = if (identityKey == null) emptyList() else
+            (id - WATCHED_ROUNDS + 1..id).flatMap { r -> (0 until DrawProgram.MAX_TICKETS_PER_ROUND).map { r to it } }
+        val ticketKeys = slots.map { key ->
+            ticketAddresses.getOrPut(key) { DrawProgram.ticket(key.first, identityKey!!, key.second).base58() }
         }
+        val configKey = DrawProgram.config().base58()
+        val fixed = listOf(
+            configKey, DrawProgram.round(id).base58(), DrawProgram.round(id - 1).base58(),
+            identityKey?.let { DrawProgram.seeker(it).base58() } ?: configKey,
+            tokenAccount ?: configKey,
+        )
+        val data = rpc.multipleAccounts(fixed + ticketKeys)
+        val config = data[0]?.let(DrawConfig::decode) ?: known
+        val current = data[1]?.let(DrawRound::decode)
+        val previous = data[2]?.let(DrawRound::decode)
+        _state.update { it.copy(config = config, programMissing = false, tokenProgram = tokenProgram, roundId = id, round = current) }
+        if (owner == null || identityKey == null) return
+
+        val seeker = data[3]?.let(SeekerState::decode)
+        val skr = if (tokenAccount != null) data[4]?.let { amountOf(it) } ?: 0L else null
+        val live = slots.zip(data.drop(fixed.size)).zip(ticketKeys).mapNotNull { (pair, address) ->
+            val (slot, raw) = pair
+            raw?.let { slot to DrawTicket.decode(address, it) }
+        }.filter { (_, t) -> t.owner.base58() == owner }
+
+        // Rounds of live tickets: this and the last are already here, older ones cost one call.
+        val rounds = HashMap<Long, DrawRound>()
+        current?.let { rounds[id] = it }
+        previous?.let { rounds[id - 1] = it }
+        val missing = live.map { it.second.round }.distinct().filter { it !in rounds }
+        rpc.multipleAccounts(missing.map { DrawProgram.round(it).base58() }).zip(missing)
+            .forEach { (raw, rid) -> raw?.let { rounds[rid] = DrawRound.decode(it) } }
+
+        val onChain = live.map { (slot, t) -> MyResult.of(t, slot.second, rounds[t.round], now, config.drawTs(t.round)) }
+        merge(owner, onChain, watchedFrom = id - WATCHED_ROUNDS + 1, seeker = seeker, skr = skr)
     }
+
+    /**
+     * Folds what the chain shows into what the device remembers. A remembered
+     * ticket that is gone from a watched round was closed: a win that disappears
+     * was claimed, anything else had its deposit returned. Results outside the
+     * watched window stay as remembered.
+     */
+    private fun merge(owner: String, onChain: List<MyResult>, watchedFrom: Long, seeker: SeekerState?, skr: Long?) {
+        val before = _state.value.results.associateBy { it.key }
+        val chainKeys = onChain.map { it.key }.toSet()
+        val closed = before.values.filter { it.key !in chainKeys && it.round >= watchedFrom && it.ticket != null }
+            .map { it.copy(ticket = null, outcome = if (it.outcome == Outcome.Won) Outcome.Claimed else it.outcome) }
+        val kept = before.values.filter { it.key !in chainKeys && (it.round < watchedFrom || it.ticket == null) }
+        val results = (onChain + closed + kept)
+            .sortedWith(compareByDescending<MyResult> { it.round }.thenBy { it.index })
+        val fresh = onChain.filter { r ->
+            val was = before[r.key]?.outcome
+            (was == Outcome.Waiting || was == Outcome.Drawing) && r.outcome != Outcome.Waiting && r.outcome != Outcome.Drawing
+        }.map { it.key }
+        if (results != _state.value.results) store.save(owner, results)
+        _state.update { it.copy(results = results, seeker = seeker, skr = skr, freshlyDrawn = it.freshlyDrawn + fresh) }
+    }
+
+    /** SPL token accounts (classic and Token-2022) keep the amount at byte 64. */
+    private fun amountOf(account: ByteArray): Long =
+        ByteBuffer.wrap(account, 64, 8).order(ByteOrder.LITTLE_ENDIAN).long
 
     /**
      * Demo mode: the wallet is its own identity. SGT mode: the wallet must hold a
@@ -196,25 +250,25 @@ class DrawViewModel : ViewModel() {
     }
 
     fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
-    fun dismissMessage() = _state.update { it.copy(message = null) }
+    fun messageShown() = _state.update { it.copy(message = null) }
+    fun revealed(key: String) = _state.update { it.copy(freshlyDrawn = it.freshlyDrawn - key) }
 
     fun connect(sender: ActivityResultSender) = viewModelScope.launch {
-        _state.update { it.copy(busy = "Opening wallet…", message = null) }
+        _state.update { it.copy(pending = it.pending + "connect") }
         when (val result = wallet.connect(sender)) {
             is TransactionResult.Success -> {
-                val key = result.authResult.accounts.first().publicKey
-                _state.update { it.copy(wallet = Base58.encodeToString(key), identity = null, busy = null) }
-                try {
-                    refresh(fullClock = true)
-                } catch (e: Exception) {
-                    _state.update { it.copy(message = "Network: ${e.message?.take(80)}") }
-                }
+                val key = Base58.encodeToString(result.authResult.accounts.first().publicKey)
+                tokenAccount = null
+                ticketAddresses.clear()
+                _state.update { it.copy(wallet = key, identity = null, results = store.load(key)) }
+                runCatching { refresh(fullClock = true) }
             }
-            is TransactionResult.NoWalletFound -> _state.update { it.copy(busy = null, message = "No Solana wallet found. Install Phantom or Solflare.") }
+            is TransactionResult.NoWalletFound -> _state.update { it.copy(message = "No Solana wallet found. Install Phantom or Solflare.") }
             is TransactionResult.Failure -> _state.update {
-                it.copy(busy = null, message = if (authorizationRefused(result.e)) WALLET_REFUSED else "Wallet: ${result.e.message}")
+                it.copy(message = if (authorizationRefused(result.e)) WALLET_REFUSED else "The wallet did not connect: ${result.e.message}")
             }
         }
+        _state.update { it.copy(pending = it.pending - "connect") }
     }
 
     private fun authorizationRefused(e: Exception) = "authorization request failed" in (e.message ?: "").lowercase()
@@ -226,7 +280,7 @@ class DrawViewModel : ViewModel() {
         val picks = s.selection.sorted()
         if (picks.size != DrawProgram.PICKS) return@launch
         val index = s.seeker?.ticketsAllowedIn(s.roundId)?.first ?: 0
-        val ok = send(sender, "Entering the draw…", "Ticket entered: ${picks.joinToString(" ")}") {
+        val ok = send(sender, "enter", "You're in! Good luck in round #${s.roundId}.") {
             listOf(
                 DrawProgram.enter(
                     owner, SolanaPublicKey.from(identity.key), identity.sgtTokens?.let(SolanaPublicKey::from),
@@ -238,39 +292,52 @@ class DrawViewModel : ViewModel() {
         if (ok) _state.update { it.copy(selection = emptySet()) }
     }
 
-    fun claim(sender: ActivityResultSender, item: Claimable) = viewModelScope.launch {
+    fun claim(sender: ActivityResultSender, item: MyResult) = viewModelScope.launch {
         val s = _state.value
         val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
         val mint = s.config?.mint ?: return@launch
         val tokenProgram = s.tokenProgram?.let(SolanaPublicKey::from) ?: return@launch
+        val ticket = item.ticket?.let(SolanaPublicKey::from) ?: return@launch
         val ata = DrawProgram.associatedTokenAccount(owner, mint, tokenProgram)
-        send(sender, "Claiming your prize…", "Claimed ${formatSkr(item.round.share)} SKR") {
+        val ok = send(sender, item.key, "${formatSkr(item.prize)} SKR is in your wallet.") {
             listOf(
                 DrawProgram.createTokenAccountIdempotent(owner, ata, owner, mint, tokenProgram),
-                DrawProgram.claim(owner, item.round.id, SolanaPublicKey.from(item.ticket.address), mint, ata, tokenProgram),
+                DrawProgram.claim(owner, item.round, ticket, mint, ata, tokenProgram),
             )
         }
+        // Show the win as claimed at once; the next poll confirms it from the chain.
+        if (ok) settleLocally(item.key, Outcome.Claimed, skrDelta = item.prize)
     }
 
-    /** Closes finished tickets with nothing to claim, returning their rent in one signature. */
+    /** Closes finished tickets with nothing to claim, returning their deposits in one signature. */
     fun collect(sender: ActivityResultSender) = viewModelScope.launch {
         val s = _state.value
         val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
-        val batch = s.closable.take(MAX_CLOSES_PER_TX)
+        val batch = s.results.filter { it.canReturnDeposit }.take(MAX_CLOSES_PER_TX)
         if (batch.isEmpty()) return@launch
-        send(sender, "Returning ticket SOL…", "Returned the SOL of ${batch.size} ticket(s)") {
-            batch.map { (t, r) -> DrawProgram.closeTicket(owner, r.id, SolanaPublicKey.from(t.address)) }
+        val ok = send(sender, "collect", "Deposit of ${batch.size} ticket(s) returned to your wallet.") {
+            batch.map { DrawProgram.closeTicket(owner, it.round, SolanaPublicKey.from(it.ticket!!)) }
+        }
+        if (ok) batch.forEach { settleLocally(it.key, it.outcome) }
+    }
+
+    private fun settleLocally(key: String, outcome: Outcome, skrDelta: Long = 0) {
+        val owner = _state.value.wallet ?: return
+        _state.update { s ->
+            val results = s.results.map { if (it.key == key) it.copy(outcome = outcome, ticket = null) else it }
+            store.save(owner, results)
+            s.copy(results = results, skr = (s.skr ?: 0) + skrDelta)
         }
     }
 
     /** Signs and sends through the wallet; true once the transaction is confirmed. */
     private suspend fun send(
         sender: ActivityResultSender,
-        busy: String,
+        pendingKey: String,
         done: String,
         build: suspend () -> List<TransactionInstruction>,
     ): Boolean {
-        _state.update { it.copy(busy = busy, message = null) }
+        _state.update { it.copy(pending = it.pending + pendingKey, message = null) }
         try {
             val instructions = build()
             val payer = SolanaPublicKey.from(_state.value.wallet ?: return false)
@@ -308,8 +375,7 @@ class DrawViewModel : ViewModel() {
             while (true) {
                 repeat(4) {
                     if (rpc.isConfirmed(sig)) {
-                        _state.update { it.copy(busy = null, message = done) }
-                        runCatching { refresh(fullClock = false) }
+                        _state.update { it.copy(pending = it.pending - pendingKey, message = done) }
                         return true
                     }
                     delay(1000)
@@ -318,15 +384,15 @@ class DrawViewModel : ViewModel() {
                 runCatching { rpc.sendTransaction(signed) }
             }
             if (rpc.isConfirmed(sig)) {
-                _state.update { it.copy(busy = null, message = done) }
-                runCatching { refresh(fullClock = false) }
+                _state.update { it.copy(pending = it.pending - pendingKey, message = done) }
                 return true
             }
-            _state.update { it.copy(busy = null, message = "The approval took too long and the transaction expired. Please try again.") }
+            _state.update { it.copy(message = "The approval took too long and the transaction expired. Please try again.") }
         } catch (e: Exception) {
             Log.w(TAG, "send failed", e)
-            _state.update { it.copy(busy = null, message = friendly(e)) }
+            _state.update { it.copy(message = friendly(e)) }
         }
+        _state.update { it.copy(pending = it.pending - pendingKey) }
         return false
     }
 
@@ -354,14 +420,18 @@ class DrawViewModel : ViewModel() {
             // in its payload, and a bare "blockhash" match called a program error expired.
             "blockhash not found" in text.lowercase() -> "The transaction expired before it was sent. Try again."
             authorizationRefused(e) -> WALLET_REFUSED
+            "429" in text || "too many requests" in text.lowercase() ->
+                "Solana devnet is busy right now. Wait a few seconds and try again."
             else -> text.take(120)
         }
     }
 
     private companion object {
         const val TAG = "DailyDraw"
-        /** Rounds of tickets the app watches: a day of demo rounds, three weeks of nightly ones. */
-        const val RECENT_ROUNDS = 20L
+        const val POLL_MS = 5_000L
+        /** Rounds whose tickets each poll reads: 16 minutes of demo rounds, 8 nights of real
+         * ones. Older results come from the device's memory. */
+        const val WATCHED_ROUNDS = 8L
         const val MAX_CLOSES_PER_TX = 8
         /** The wallet said no without saying why: most often a wallet still on mainnet. */
         const val WALLET_REFUSED = "The wallet refused. In Phantom turn on Settings → Developer Settings → Testnet Mode (Solana Devnet), then try again."
