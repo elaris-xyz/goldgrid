@@ -49,11 +49,23 @@ export const ticketPda = (id, identity, index) =>
 export const programDataPda = () =>
   PublicKey.findProgramAddressSync([PROGRAM_ID.toBuffer()], BPF_UPGRADEABLE_LOADER)[0];
 
-export async function send(connection, ixs, signers, label) {
-  const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...ixs);
-  const sig = await sendAndConfirmTransaction(connection, tx, signers, { commitment: "confirmed" });
-  log(`${label} ok  https://explorer.solana.com/tx/${sig}?cluster=devnet`);
-  return sig;
+/**
+ * Sends and confirms, resending when the blockhash expires first. An expired
+ * blockhash means the transaction can never land, so a resend cannot apply it
+ * twice; on this link a dropped send is routine, not a failure of the step.
+ */
+export async function send(connection, ixs, signers, label, attempts = 4) {
+  for (let attempt = 1; ; attempt++) {
+    const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ...ixs);
+    try {
+      const sig = await sendAndConfirmTransaction(connection, tx, signers, { commitment: "confirmed" });
+      log(`${label} ok  https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+      return sig;
+    } catch (e) {
+      if (e?.name !== "TransactionExpiredBlockheightExceededError" || attempt >= attempts) throw e;
+      log(`${label}: expired before landing, resending (${attempt}/${attempts - 1})`);
+    }
+  }
 }
 
 export function roundTimes(config, id) {

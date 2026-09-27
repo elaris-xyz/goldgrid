@@ -43,6 +43,8 @@ data class UiState(
     /** chain time minus device time, so countdowns follow the program's clock. */
     val clockOffset: Long = 0,
     val config: DrawConfig? = null,
+    /** The RPC answered but the program's config account is not there. */
+    val programMissing: Boolean = false,
     /** The program that owns the prize mint (classic SPL Token or Token-2022). */
     val tokenProgram: String? = null,
     val roundId: Long = 0,
@@ -107,7 +109,12 @@ class DrawViewModel : ViewModel() {
             val chain = rpc.chainTime()
             _state.update { it.copy(clockOffset = chain - System.currentTimeMillis() / 1000) }
         }
-        val config = DrawConfig.decode(rpc.accountData(DrawProgram.config().base58()) ?: return)
+        val raw = rpc.accountData(DrawProgram.config().base58())
+        if (raw == null) {
+            _state.update { it.copy(programMissing = true) }
+            return
+        }
+        val config = DrawConfig.decode(raw)
         val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(config.mint.base58())
         val now = _state.value.chainNow()
         val id = config.roundAt(now)
@@ -116,7 +123,7 @@ class DrawViewModel : ViewModel() {
         ).map { data -> data?.let(DrawRound::decode) }
         _state.update {
             it.copy(
-                config = config, tokenProgram = tokenProgram, roundId = id, round = current,
+                config = config, programMissing = false, tokenProgram = tokenProgram, roundId = id, round = current,
                 lastRound = previous ?: it.lastRound.takeIf { r -> r?.id == id - 1 },
             )
         }

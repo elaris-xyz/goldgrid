@@ -10,15 +10,20 @@ free, full stop: a paid entry would make this a lottery.
 - **One Seeker, one ticket.** A ticket is tied to the Seeker Genesis Token, checked
   on-chain against the SGT group (120,999 members on mainnet). Extra tickets are
   earned by a streak — one per 7 consecutive days, up to 5 — never bought.
-- **Nobody can know the numbers in time to use them.** Entries close first; the
-  randomness is committed after that and revealed in the same transaction that
-  reads it.
+- **Nobody can know the numbers in time to use them, or re-roll them.** Entries
+  close first; the randomness is committed after that, and the reveal must be of
+  that exact commitment (its seed slot is recorded), so whoever runs the draw
+  cannot peek, re-commit and try again.
 - **Every night has a winner.** The best match wins, not only 5 of 5 (1 in
   32.8 million). If nobody matches anything, the pot carries to the next night.
 - **Sponsors grow the pot as people enter.** Each ticket moves 1 SKR from the
   sponsor budget into that night's pot.
 - **The draw needs no server.** Commit, reveal and scoring are permissionless;
-  whoever opens the app after the draw time can run them.
+  whoever opens the app after the draw time can run them. If a committed draw is
+  never revealed (an oracle outage), it can be committed again after 300 slots.
+- **Entering costs only the transaction fee.** Claiming closes the ticket and
+  returns its rent; losing tickets are closed for their rent; a round closes once
+  its tickets are, and its rent goes back to whoever created it.
 
 ## Layout
 
@@ -39,11 +44,14 @@ cargo test -p daily_draw --lib        # 11 unit tests, incl. a real mainnet SGT 
 cd cli && npm install && node e2e-devnet.mjs   # one full night on devnet
 ```
 
-Devnet program: [`8X7udAY9fwDU1HY4gWGHvEQahZX6RYfoNYCx8UovxjNQ`](https://explorer.solana.com/address/8X7udAY9fwDU1HY4gWGHvEQahZX6RYfoNYCx8UovxjNQ?cluster=devnet)
-— demo mode: 2-minute rounds, entries close at 90 s.
+Devnet program: [`gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM`](https://explorer.solana.com/address/gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM?cluster=devnet)
+— demo mode: 2-minute rounds, entries close at 90 s. Only the program's upgrade
+authority can initialize it.
 
 ## Status
 
-- [x] Program: enter, commit/reveal with Switchboard, scoring, split, rollover, claim
-- [x] Devnet end-to-end test passing (rollover and a two-winner split both exercised)
-- [ ] Android app (Kotlin, Jetpack Compose, Mobile Wallet Adapter)
+- [x] Program: enter, commit/reveal with Switchboard, scoring, split, rollover, claim, rent return
+- [x] Devnet end-to-end test, including the re-roll attack and rent returns
+- [x] Android app: wallet, round countdown on chain time, pick grid, shake to quick pick,
+      entry (demo and SGT), results, claim, rent return
+- [ ] In-app draw crank, widget and notifications

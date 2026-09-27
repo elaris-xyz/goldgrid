@@ -202,7 +202,11 @@ private fun TonightCard(s: UiState, now: Long) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (config == null) {
-            Text("Connecting to Solana…", color = Muted)
+            Text(
+                if (s.programMissing) "The draw isn't live on devnet right now. Checking again every few seconds…"
+                else "Connecting to Solana…",
+                color = Muted,
+            )
             return@Column
         }
         val close = config.closeTs(s.roundId)

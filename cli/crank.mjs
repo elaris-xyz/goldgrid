@@ -1,6 +1,7 @@
 // Runs the draw for every round that has passed its draw time and is not
 // finished yet, and closes finished rounds. Permissionless: anyone may run this,
-// and the app does the same work in-app. Loops until stopped; `--once` does a
+// the app does not crank yet, so this must be running for rounds to finish.
+// Loops until stopped; `--once` does a
 // single pass.
 import { chainNow, connect, configPda, crankRound, loadKeypair, log, roundTimes } from "./lib.mjs";
 
