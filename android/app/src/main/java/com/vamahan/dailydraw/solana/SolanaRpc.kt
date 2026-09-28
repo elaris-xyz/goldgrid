@@ -30,11 +30,6 @@ import java.util.concurrent.TimeUnit
 private class RateLimited : Exception()
 
 class SolanaRpc(private val url: String) {
-    private companion object {
-        /** 1 + 2 + 4 + 8 s of waiting before a 429 reaches the player. */
-        const val RATE_LIMIT_RETRIES = 5
-    }
-
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -191,6 +186,8 @@ class SolanaRpc(private val url: String) {
 
     companion object {
         const val CLOCK_SYSVAR = "SysvarC1ock11111111111111111111111111111111"
+        /** 1 + 2 + 4 + 8 s of waiting before a 429 reaches the player. */
+        private const val RATE_LIMIT_RETRIES = 5
     }
 }
 
