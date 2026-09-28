@@ -33,6 +33,9 @@ import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+/** Below this a ticket's refundable deposit and the fee may not fit: the app offers the faucet. */
+const val LOW_SOL_LAMPORTS = 5_000_000L
+
 /** Who the program counts as "one Seeker": the SGT mint, or the wallet in demo mode. */
 data class Identity(val key: String, val sgtTokens: String?)
 
@@ -59,8 +62,12 @@ data class UiState(
     val selection: Set<Int> = emptySet(),
     /** Actions waiting for the wallet or the chain: "enter", "collect", or a result key. */
     val pending: Set<String> = emptySet(),
-    /** One-shot notice for the snackbar. */
+    /** One-shot notice for the snackbar: something worked. */
     val message: String? = null,
+    /** Something failed: stays on screen, next to the action, until dismissed or retried. */
+    val error: String? = null,
+    /** The wallet's SOL, which pays each ticket's refundable deposit and the fee. */
+    val lamports: Long? = null,
 ) {
     fun chainNow() = System.currentTimeMillis() / 1000 + clockOffset
     fun ticketsLeft(): Int {
@@ -69,6 +76,7 @@ data class UiState(
         return (allowed - used).coerceAtLeast(0)
     }
     fun resultsIn(round: Long) = results.filter { it.round == round }
+    val lowSol get() = wallet != null && lamports != null && lamports < LOW_SOL_LAMPORTS
 }
 
 class DrawViewModel(app: Application) : AndroidViewModel(app) {
@@ -184,6 +192,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
 
         val onChain = live.map { (slot, t) -> MyResult.of(t, slot.second, rounds[t.round], now, config.drawTs(t.round)) }
         merge(owner, onChain, watchedFrom = id - WATCHED_ROUNDS + 1, seeker = seeker, skr = skr)
+        if (fullClock || _state.value.lamports == null || (_state.value.lamports ?: 0) < LOW_SOL_LAMPORTS) {
+            val lamports = rpc.lamports(owner)
+            _state.update { it.copy(lamports = lamports) }
+        }
     }
 
     /**
@@ -228,7 +240,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             }?.let { (h, _) -> Identity(h.mint, h.account) }
         }
         if (identity == null) {
-            _state.update { it.copy(message = DrawError.NotASeeker.userMessage) }
+            _state.update { it.copy(error = DrawError.NotASeeker.userMessage) }
         } else {
             ticketAddresses.clear()
             _state.update { it.copy(identity = identity) }
@@ -251,10 +263,31 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
     fun messageShown() = _state.update { it.copy(message = null) }
+    fun dismissError() = _state.update { it.copy(error = null) }
+
+    /** Devnet SOL from the public faucet, for a judge whose wallet is empty. */
+    fun airdrop() = viewModelScope.launch {
+        val owner = _state.value.wallet ?: return@launch
+        _state.update { it.copy(pending = it.pending + "airdrop", error = null) }
+        try {
+            val sig = rpc.requestAirdrop(owner, AIRDROP_LAMPORTS)
+            repeat(30) {
+                if (rpc.isConfirmed(sig)) {
+                    _state.update { it.copy(lamports = rpc.lamports(owner), message = "0.5 devnet SOL added to your wallet.") }
+                    return@repeat
+                }
+                delay(1000)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "airdrop failed", e)
+            _state.update { it.copy(error = "The devnet faucet is busy. Get free devnet SOL at faucet.solana.com, then come back.") }
+        }
+        _state.update { it.copy(pending = it.pending - "airdrop") }
+    }
     fun revealed(key: String) = _state.update { it.copy(freshlyDrawn = it.freshlyDrawn - key) }
 
     fun connect(sender: ActivityResultSender) = viewModelScope.launch {
-        _state.update { it.copy(pending = it.pending + "connect") }
+        _state.update { it.copy(pending = it.pending + "connect", error = null) }
         when (val result = wallet.connect(sender)) {
             is TransactionResult.Success -> {
                 val key = Base58.encodeToString(result.authResult.accounts.first().publicKey)
@@ -263,9 +296,9 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(wallet = key, identity = null, results = store.load(key)) }
                 runCatching { refresh(fullClock = true) }
             }
-            is TransactionResult.NoWalletFound -> _state.update { it.copy(message = "No Solana wallet found. Install Phantom or Solflare.") }
+            is TransactionResult.NoWalletFound -> _state.update { it.copy(error = "No Solana wallet found. Install Phantom or Solflare.") }
             is TransactionResult.Failure -> _state.update {
-                it.copy(message = if (authorizationRefused(result.e)) WALLET_REFUSED else "The wallet did not connect: ${result.e.message}")
+                it.copy(error = if (authorizationRefused(result.e)) WALLET_REFUSED else "The wallet did not connect: ${result.e.message}")
             }
         }
         _state.update { it.copy(pending = it.pending - "connect") }
@@ -337,7 +370,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         done: String,
         build: suspend () -> List<TransactionInstruction>,
     ): Boolean {
-        _state.update { it.copy(pending = it.pending + pendingKey, message = null) }
+        _state.update { it.copy(pending = it.pending + pendingKey, message = null, error = null) }
         try {
             val instructions = build()
             val payer = SolanaPublicKey.from(_state.value.wallet ?: return false)
@@ -387,10 +420,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(pending = it.pending - pendingKey, message = done) }
                 return true
             }
-            _state.update { it.copy(message = "The approval took too long and the transaction expired. Please try again.") }
+            _state.update { it.copy(error = "The approval took too long and the transaction expired. Please try again.") }
         } catch (e: Exception) {
             Log.w(TAG, "send failed", e)
-            _state.update { it.copy(message = friendly(e)) }
+            _state.update { it.copy(error = friendly(e)) }
         }
         _state.update { it.copy(pending = it.pending - pendingKey) }
         return false
@@ -429,6 +462,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "DailyDraw"
         const val POLL_MS = 5_000L
+        const val AIRDROP_LAMPORTS = 500_000_000L
         /** Rounds whose tickets each poll reads: 16 minutes of demo rounds, 8 nights of real
          * ones. Older results come from the device's memory. */
         const val WATCHED_ROUNDS = 8L

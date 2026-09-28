@@ -3,21 +3,21 @@
 // the app does not crank yet, so this must be running for rounds to finish.
 // Loops until stopped; `--once` does a
 // single pass.
-import { chainNow, connect, configPda, crankRound, loadKeypair, log, roundTimes } from "./lib.mjs";
+import { chainNow, connect, crankRound, loadKeypair, log } from "./lib.mjs";
 
 const payer = loadKeypair(process.env.CRANK_KEYPAIR ?? new URL("../spikes/switchboard-devnet/payer.json", import.meta.url));
 const { connection, program } = connect(payer);
 const once = process.argv.includes("--once");
 
 async function pass() {
-  const config = await program.account.config.fetch(configPda());
   const now = await chainNow(connection);
   // Every Round account, not a window of recent ids: a round the crank missed
   // while it was down still holds a pot and tickets waiting for a result.
   const rounds = await program.account.round.all();
   const pending = rounds
     .map((r) => r.account)
-    .filter((r) => now >= roundTimes(config, r.id.toNumber()).draw)
+    // Each round carries its own draw time: a schedule change must not move it.
+    .filter((r) => now >= r.drawTs.toNumber())
     .filter((r) => !("settled" in r.status) || r.openTickets === 0)
     .sort((a, b) => a.id.toNumber() - b.id.toNumber());
   for (const r of pending) {

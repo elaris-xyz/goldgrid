@@ -133,6 +133,10 @@ class SolanaRpc(private val url: String) {
         return result.jsonObject["value"]?.jsonObject?.get("amount")?.jsonPrimitive?.content?.toLongOrNull()
     }
 
+    /** Devnet only: asks the public faucet for SOL; returns the airdrop's signature. */
+    suspend fun requestAirdrop(address: String, lamports: Long): String =
+        call("requestAirdrop", buildJsonArray { add(address); add(lamports) }).jsonPrimitive.content
+
     suspend fun lamports(address: String): Long {
         val result = call("getBalance", buildJsonArray { add(address); add(buildJsonObject { put("commitment", "confirmed") }) })
         return result.jsonObject["value"]!!.jsonPrimitive.long

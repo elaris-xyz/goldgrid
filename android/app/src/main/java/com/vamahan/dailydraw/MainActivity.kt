@@ -71,6 +71,8 @@ private val Card = Color(0xFF1A1C23)
 private val CardHigh = Color(0xFF242732)
 private val Muted = Color(0xFF8A8F9C)
 private val Win = Color(0xFF4ADE80)
+private val Alert = Color(0xFFF87171)
+private const val CLOSING_SECS = 30
 
 class MainActivity : ComponentActivity() {
     private val vm: DrawViewModel by viewModels()
@@ -140,8 +142,10 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                 Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
             }
             NowCard(s, now, open, left)
+            s.error?.let { ErrorCard(it, onDismiss = vm::dismissError) }
+            if (s.lowSol) LowSolCard(busy = "airdrop" in s.pending, onAirdrop = vm::airdrop)
             if (picking) {
-                PickArea(s, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection) {
+                PickArea(s, now, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection) {
                     if (s.wallet == null) vm.connect(sender) else vm.enter(sender)
                 }
             }
@@ -220,6 +224,7 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
 @Composable
 private fun PickArea(
     s: UiState,
+    now: Long,
     onToggle: (Int) -> Unit,
     onQuickPick: () -> Unit,
     onClear: () -> Unit,
@@ -235,9 +240,12 @@ private fun PickArea(
         val entering = "enter" in s.pending
         val needsSgt = s.wallet != null && s.identity == null && s.config?.requireSgt == true
         val ready = s.selection.size == DrawProgram.PICKS
+        // A wallet approval takes 10-60 s; entering in the last seconds only ends
+        // in "entries closed" after the player has already approved.
+        val closing = s.config?.let { it.closeTs(s.roundId) - now < CLOSING_SECS } ?: false
         Button(
             onClick = onEnter,
-            enabled = !entering && "connect" !in s.pending && !needsSgt && (s.wallet == null || ready),
+            enabled = !entering && !closing && "connect" !in s.pending && !needsSgt && (s.wallet == null || ready),
             colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
             modifier = Modifier.fillMaxWidth().height(54.dp),
         ) {
@@ -248,6 +256,7 @@ private fun PickArea(
             Text(
                 when {
                     entering -> "Confirm in your wallet, then wait a moment…"
+                    closing -> "Entries closing — next round in ${clock(((s.config?.drawTs(s.roundId) ?: now) - now).coerceAtLeast(0))}"
                     s.wallet == null -> "Connect wallet to enter"
                     needsSgt -> "Needs a Seeker Genesis Token"
                     !ready -> "Pick ${DrawProgram.PICKS - s.selection.size} more"
@@ -332,7 +341,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            val drawIn = (s.config?.drawTs(r.round) ?: now) - now
+            val drawIn = (if (r.drawTs > 0) r.drawTs else s.config?.drawTs(r.round) ?: now) - now
             val (label, color) = when (r.outcome) {
                 Outcome.Waiting -> "Draw in ${clock(drawIn.coerceAtLeast(0))}" to Muted
                 Outcome.Drawing -> "Drawing the numbers…" to Gold
@@ -366,6 +375,39 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
                 }
                 Text(if (pending) "Claiming — confirm in your wallet…" else "Claim ${formatSkr(r.prize)} SKR", fontWeight = FontWeight.Bold)
             }
+        }
+    }
+}
+
+/** A failure stays next to the action it belongs to until the player dismisses or retries. */
+@Composable
+private fun ErrorCard(text: String, onDismiss: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Alert.copy(alpha = 0.15f))
+            .border(1.dp, Alert.copy(alpha = 0.6f), RoundedCornerShape(12.dp)).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Text("✕", color = Muted, fontSize = 18.sp, modifier = Modifier.clickable(onClick = onDismiss).padding(start = 12.dp))
+    }
+}
+
+@Composable
+private fun LowSolCard(busy: Boolean, onAirdrop: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Card).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "Your wallet needs a little devnet SOL. Entry is free, but each ticket holds a small deposit you get back after the draw.",
+            color = Color.White, fontSize = 14.sp,
+        )
+        OutlinedButton(onClick = onAirdrop, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            if (busy) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(if (busy) "Asking the devnet faucet…" else "Get free devnet SOL")
         }
     }
 }

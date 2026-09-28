@@ -144,7 +144,7 @@ enum class DrawError(val userMessage: String) {
     ZeroAmount("Amount must be greater than zero."),
     Overflow("Arithmetic overflow."),
     NotCurrentRound("That round is over. Try again for the new one."),
-    EntriesClosed("Entries for this round are closed."),
+    EntriesClosed("Entries closed while you were confirming. Your numbers are kept — enter the next round."),
     InvalidPicks("Pick 5 different numbers from 1 to 85."),
     NotASeeker("This draw needs the Seeker Genesis Token in the connected wallet."),
     WrongTicketIndex("Your ticket count changed. Try again."),
@@ -162,7 +162,8 @@ enum class DrawError(val userMessage: String) {
     UnclaimedPrize("Claim your prize first; claiming also returns the ticket's SOL."),
     TicketsOpen("Some tickets of this round are still open."),
     NotCreator("Only the round's creator gets its rent back."),
-    NotUpgradeAuthority("Only the program's upgrade authority can initialize.");
+    NotUpgradeAuthority("Only the program's upgrade authority can initialize."),
+    NotAdmin("Only the admin can change the schedule.");
 
     companion object {
         private const val FIRST_CODE = 6000

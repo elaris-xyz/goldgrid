@@ -25,6 +25,9 @@ data class MyResult(
     val matches: Int = 0,
     val best: Int = 0,
     val prize: Long = 0,
+    /** When this round is drawn, from the round itself: a schedule change moves
+     * future rounds only, so the config cannot say this for past ones. */
+    val drawTs: Long = 0,
     /** The live ticket account, or null once it has been closed. */
     val ticket: String? = null,
 ) {
@@ -34,8 +37,9 @@ data class MyResult(
     val canReturnDeposit get() = (outcome == Outcome.NoMatch || outcome == Outcome.Matched) && ticket != null
 
     companion object {
-        fun of(ticket: DrawTicket, index: Int, round: DrawRound?, now: Long, drawTs: Long): MyResult {
-            val base = MyResult(ticket.round, index, ticket.picks, Outcome.Waiting, ticket = ticket.address)
+        fun of(ticket: DrawTicket, index: Int, round: DrawRound?, now: Long, scheduledDraw: Long): MyResult {
+            val drawTs = round?.drawTs?.takeIf { it > 0 } ?: scheduledDraw
+            val base = MyResult(ticket.round, index, ticket.picks, Outcome.Waiting, drawTs = drawTs, ticket = ticket.address)
             if (round == null || round.status != RoundStatus.Settled || !ticket.scored) {
                 return base.copy(outcome = if (now < drawTs) Outcome.Waiting else Outcome.Drawing)
             }
@@ -66,6 +70,7 @@ class ResultStore(context: Context) {
                 round = o.getLong("round"), index = o.getInt("index"), picks = o.ints("picks"),
                 outcome = Outcome.valueOf(o.getString("outcome")), winning = o.ints("winning"),
                 matches = o.getInt("matches"), best = o.getInt("best"), prize = o.getLong("prize"),
+                drawTs = o.optLong("drawTs"),
                 ticket = o.optString("ticket").ifEmpty { null },
             )
         }
@@ -77,7 +82,7 @@ class ResultStore(context: Context) {
             array.put(JSONObject().apply {
                 put("round", r.round); put("index", r.index); put("picks", JSONArray(r.picks))
                 put("outcome", r.outcome.name); put("winning", JSONArray(r.winning))
-                put("matches", r.matches); put("best", r.best); put("prize", r.prize)
+                put("matches", r.matches); put("best", r.best); put("prize", r.prize); put("drawTs", r.drawTs)
                 put("ticket", r.ticket ?: "")
             })
         }
