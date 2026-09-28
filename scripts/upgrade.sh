@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Upgrades the live program in place. A bigger build first needs the program data
 # account extended; the upload then goes through deploy.sh's resumable buffer.
-source /mnt/e/Arash/Code/vamahan/scripts/env.sh
-cd /mnt/e/Arash/Code/vamahan
+source "$(dirname "$0")/env.sh"
+cd "$(dirname "$0")/.."
 PROGRAM=$(solana address -k target/deploy/daily_draw-keypair.json)
 have=$(solana program show "$PROGRAM" | awk '/Data Length/ {print $3}')
 need=$(stat -c %s target/deploy/daily_draw.so)

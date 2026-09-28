@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compares the program on devnet with the local build, byte for byte.
-source /mnt/e/Arash/Code/vamahan/scripts/env.sh
-cd /mnt/e/Arash/Code/vamahan
+source "$(dirname "$0")/env.sh"
+cd "$(dirname "$0")/.."
 PROGRAM=$(solana address -k target/deploy/daily_draw-keypair.json)
 solana program dump "$PROGRAM" /tmp/deployed.so >/dev/null
 local_sum=$(sha256sum target/deploy/daily_draw.so | cut -c1-16)

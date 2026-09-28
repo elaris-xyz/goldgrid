@@ -3,8 +3,8 @@
 # this link drops some of them every run, so the upload goes into ONE buffer whose
 # keypair is kept in keys/: every retry skips the chunks already written instead of
 # starting over. The buffer is only closed once the program is live.
-source /mnt/e/Arash/Code/vamahan/scripts/env.sh
-cd /mnt/e/Arash/Code/vamahan
+source "$(dirname "$0")/env.sh"
+cd "$(dirname "$0")/.."
 PROGRAM=$(solana address -k target/deploy/daily_draw-keypair.json)
 BUFFER=keys/deploy-buffer.json
 [ -f "$BUFFER" ] || solana-keygen new --no-bip39-passphrase --silent -o "$BUFFER"

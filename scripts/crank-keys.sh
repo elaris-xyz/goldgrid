@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Creates the crank's own keypair and randomness keypair (once) and funds the crank
 # from the deployer. The crank key pays fees only; it holds no authority.
-source /mnt/e/Arash/Code/vamahan/scripts/env.sh
-cd /mnt/e/Arash/Code/vamahan
+source "$(dirname "$0")/env.sh"
+cd "$(dirname "$0")/.."
 for k in crank crank-randomness; do
   [ -f keys/$k.json ] || solana-keygen new --no-bip39-passphrase --silent -o keys/$k.json
 done
