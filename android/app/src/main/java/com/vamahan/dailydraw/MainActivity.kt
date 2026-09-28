@@ -45,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -55,6 +56,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -362,6 +364,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
         }
         Text("Your numbers", color = Muted, fontSize = 12.sp)
         Balls(r.picks, highlight = r.hits)
+        if (r.winning.isNotEmpty()) VerifyLink(r.round)
         if (r.canClaim) {
             Button(
                 onClick = onClaim,
@@ -377,6 +380,23 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
             }
         }
     }
+}
+
+/**
+ * The draw's receipts: the round account's history on Solana Explorer holds the
+ * Switchboard commit made after entries closed, the reveal, and the scoring.
+ * Anyone can check that the numbers came from that commit and nowhere else.
+ */
+@Composable
+private fun VerifyLink(round: Long) {
+    val uri = LocalUriHandler.current
+    val address by produceState<String?>(null, round) { value = DrawProgram.round(round).base58() }
+    val a = address ?: return
+    Text(
+        "Verify this draw on Solana Explorer ↗",
+        color = Gold, fontSize = 13.sp,
+        modifier = Modifier.clickable { uri.openUri("https://explorer.solana.com/address/$a?cluster=devnet") }.padding(vertical = 4.dp),
+    )
 }
 
 /** A failure stays next to the action it belongs to until the player dismisses or retries. */
@@ -461,7 +481,7 @@ private fun HowItWorks() {
         listOf(
             "Pick 5 numbers from 1 to 85. One free ticket per round — per Seeker Genesis Token on mainnet.",
             "Play every day: each 7-day streak adds a ticket, up to 5.",
-            "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us.",
+            "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
             "The best match wins the pot and ties split it. No match? The pot rolls over.",
             "This demo runs on devnet with a round every few minutes; prizes are test SKR.",
         ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
