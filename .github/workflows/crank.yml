@@ -6,6 +6,7 @@
 # keeps one run queued behind it in the concurrency group, so a new job takes
 # over as soon as the last one ends.
 name: draw-crank
+run-name: draw crank
 on:
   schedule:
     - cron: "7 * * * *"
