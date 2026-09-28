@@ -33,3 +33,4 @@ jobs:
         env:
           CRANK_SECRET: ${{ secrets.CRANK_SECRET }}
           RANDOMNESS_SECRET: ${{ secrets.RANDOMNESS_SECRET }}
+          RPC_URL: ${{ secrets.RPC_URL }}

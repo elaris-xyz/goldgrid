@@ -405,13 +405,15 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             rpc.sendTransaction(signed)
             // Resend until it confirms or its blockhash dies; a dropped packet is
             // routine on a mobile link, a resend of the same bytes cannot land twice.
+            // One status check every 2 s: the public endpoint allows 10 calls per method
+            // per 10 s, and a 1 s loop alone used the whole budget.
             while (true) {
                 repeat(4) {
                     if (rpc.isConfirmed(sig)) {
                         _state.update { it.copy(pending = it.pending - pendingKey, message = done) }
                         return true
                     }
-                    delay(1000)
+                    delay(2000)
                 }
                 if (!rpc.isBlockhashValid(blockhash)) break
                 runCatching { rpc.sendTransaction(signed) }

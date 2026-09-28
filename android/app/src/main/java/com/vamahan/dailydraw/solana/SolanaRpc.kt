@@ -37,6 +37,7 @@ class SolanaRpc(private val url: String) {
     private val json = Json { ignoreUnknownKeys = true }
 
     private suspend fun call(method: String, params: JsonArray): JsonElement = withContext(Dispatchers.IO) {
+        if (com.vamahan.dailydraw.BuildConfig.DEBUG) android.util.Log.d("DailyDrawRpc", method)
         val body = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", 1)
@@ -50,11 +51,17 @@ class SolanaRpc(private val url: String) {
         repeat(RATE_LIMIT_RETRIES) { attempt ->
             try {
                 http.newCall(Request.Builder().url(url).post(body).build()).execute().use { response ->
-                    if (response.code == 429) throw RateLimited()
+                    if (response.code == 429) {
+                        if (com.vamahan.dailydraw.BuildConfig.DEBUG) android.util.Log.w("DailyDrawRpc", "429 on $method: ${response.headers}")
+                        throw RateLimited()
+                    }
                     val text = response.body?.string() ?: throw IOException("empty response")
                     val obj = json.parseToJsonElement(text).jsonObject
                     obj["error"]?.let { error ->
-                        if ("429" in error.toString()) throw RateLimited()
+                        if ("429" in error.toString()) {
+                            if (com.vamahan.dailydraw.BuildConfig.DEBUG) android.util.Log.w("DailyDrawRpc", "429 on $method: $error")
+                            throw RateLimited()
+                        }
                         throw RpcException(error.toString())
                     }
                     return@withContext obj["result"] ?: JsonNull

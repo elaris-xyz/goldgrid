@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -14,7 +16,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "RPC_URL", "\"https://api.devnet.solana.com\"")
+        // A keyed RPC (Helius) lives in local.properties as rpc.url, never in the repo;
+        // without one the app falls back to the public devnet endpoint.
+        buildConfigField("String", "RPC_URL", "\"${localRpcUrl()}\"")
     }
 
     buildTypes {
@@ -49,4 +53,10 @@ dependencies {
     implementation(libs.rpc.core)
     implementation(libs.multimult)
     testImplementation(libs.junit)
+}
+
+fun localRpcUrl(): String {
+    val props = Properties()
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { props.load(it) }
+    return props.getProperty("rpc.url") ?: "https://api.devnet.solana.com"
 }
