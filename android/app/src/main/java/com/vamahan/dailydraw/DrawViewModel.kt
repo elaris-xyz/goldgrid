@@ -322,7 +322,14 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         // Keep the picks when entering failed, so the player can simply retry.
-        if (ok) _state.update { it.copy(selection = emptySet()) }
+        if (ok) {
+            _state.update { it.copy(selection = emptySet()) }
+            val config = s.config ?: return@launch
+            val ticket = DrawProgram.ticket(s.roundId, SolanaPublicKey.from(identity.key), index).base58()
+            // Chain time to device time, then a little slack for the crank.
+            val at = (config.drawTs(s.roundId) - s.clockOffset) * 1000 + RESULT_SLACK_MS
+            ResultAlarm.schedule(getApplication(), s.roundId, index, ticket, at)
+        }
     }
 
     fun claim(sender: ActivityResultSender, item: MyResult) = viewModelScope.launch {
@@ -464,6 +471,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "DailyDraw"
         const val POLL_MS = 5_000L
+        /** The crank needs a minute or two after draw time: commit, oracle reveal, scoring. */
+        const val RESULT_SLACK_MS = 120_000L
         const val AIRDROP_LAMPORTS = 500_000_000L
         /** Rounds whose tickets each poll reads: 16 minutes of demo rounds, 8 nights of real
          * ones. Older results come from the device's memory. */

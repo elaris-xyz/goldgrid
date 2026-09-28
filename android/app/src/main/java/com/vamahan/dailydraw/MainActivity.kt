@@ -1,13 +1,18 @@
 package com.vamahan.dailydraw
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -122,6 +127,14 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
             vm.messageShown()
             snackbar.showSnackbar(it)
         }
+    }
+    // Ask for notifications once the player has a ticket to hear about, not before.
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val context = LocalContext.current
+    LaunchedEffect(s.results.isNotEmpty()) {
+        if (s.results.isNotEmpty() && Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
     val config = s.config
     val open = config != null && now < config.closeTs(s.roundId)

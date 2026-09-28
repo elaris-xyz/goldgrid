@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- "Your result is in" after each round the player entered. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Lets the app find installed Mobile Wallet Adapter wallets on Android 11+. -->
     <queries>
@@ -26,5 +28,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <receiver android:name=".ResultReceiver" android:exported="false" />
     </application>
 </manifest>
