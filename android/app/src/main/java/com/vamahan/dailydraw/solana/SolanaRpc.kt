@@ -27,7 +27,14 @@ import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 
 /** The few JSON-RPC calls the app needs, with the account data already decoded. */
+private class RateLimited : Exception()
+
 class SolanaRpc(private val url: String) {
+    private companion object {
+        /** 1 + 2 + 4 + 8 s of waiting before a 429 reaches the player. */
+        const val RATE_LIMIT_RETRIES = 5
+    }
+
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -41,20 +48,31 @@ class SolanaRpc(private val url: String) {
             put("method", method)
             put("params", params)
         }.toString().toRequestBody("application/json".toMediaType())
+        // Public devnet limits each method per IP, and a phone behind a shared VPN
+        // exit shares that budget with strangers: a 429 is waited out, not shown.
         var lastError: Exception? = null
-        repeat(3) { attempt ->
+        var networkFailures = 0
+        repeat(RATE_LIMIT_RETRIES) { attempt ->
             try {
                 http.newCall(Request.Builder().url(url).post(body).build()).execute().use { response ->
+                    if (response.code == 429) throw RateLimited()
                     val text = response.body?.string() ?: throw IOException("empty response")
                     val obj = json.parseToJsonElement(text).jsonObject
-                    obj["error"]?.let { throw RpcException(it.toString()) }
+                    obj["error"]?.let { error ->
+                        if ("429" in error.toString()) throw RateLimited()
+                        throw RpcException(error.toString())
+                    }
                     return@withContext obj["result"] ?: JsonNull
                 }
+            } catch (e: RateLimited) {
+                lastError = RpcException("429 Too many requests for $method")
+                delay(1000L shl attempt)
             } catch (e: RpcException) {
                 throw e
             } catch (e: Exception) {
                 lastError = e
-                delay(400L * (attempt + 1))
+                if (++networkFailures >= 3) throw e
+                delay(400L * networkFailures)
             }
         }
         throw lastError ?: IOException("rpc failed")
