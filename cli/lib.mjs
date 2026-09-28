@@ -29,7 +29,12 @@ const t0 = Date.now();
 export const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s]`, ...a);
 
 export function loadKeypair(path) {
-  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(path, "utf8"))));
+  return keypairFromJson(fs.readFileSync(path, "utf8"));
+}
+
+/** A keypair from its JSON byte array, as solana-keygen writes it and a CI secret holds it. */
+export function keypairFromJson(json) {
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(json)));
 }
 
 export function connect(payer) {
@@ -114,14 +119,16 @@ export async function switchboardProgram() {
 export async function crankerRandomness(program, payer, sbProgram, { fresh = false } = {}) {
   const file = new URL("./.randomness-keypair.json", import.meta.url);
   const config = await program.account.config.fetch(configPda());
-  let kp = !fresh && fs.existsSync(file) ? loadKeypair(file) : null;
+  // In CI there is no file to keep it in: the keypair comes from a secret.
+  const fromEnv = process.env.RANDOMNESS_SECRET;
+  let kp = fresh ? null : fromEnv ? keypairFromJson(fromEnv) : fs.existsSync(file) ? loadKeypair(file) : null;
   if (kp && (await program.provider.connection.getAccountInfo(kp.publicKey))) {
     return { kp, randomness: new sb.Randomness(sbProgram, kp.publicKey) };
   }
-  kp = Keypair.generate();
+  kp = kp && !fresh ? kp : Keypair.generate();
   const [randomness, createIx] = await sb.Randomness.create(sbProgram, kp, config.sbQueue, payer.publicKey);
   await send(program.provider.connection, [createIx], [payer, kp], "randomness account created");
-  fs.writeFileSync(file, JSON.stringify([...kp.secretKey]));
+  if (!fromEnv || fresh) fs.writeFileSync(file, JSON.stringify([...kp.secretKey]));
   return { kp, randomness };
 }
 

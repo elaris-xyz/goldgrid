@@ -1,0 +1,34 @@
+# Runs the nightly draw on GitHub's machines, so no round waits for anyone's
+# computer to be on. The draw is permissionless: this is one cranker, and anyone
+# can run `node cli/crank.mjs` beside it.
+#
+# One job cranks for 5 h 45 min (inside the 6 h job limit). The hourly schedule
+# keeps one run queued behind it in the concurrency group, so a new job takes
+# over as soon as the last one ends.
+name: draw-crank
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: draw-crank
+  cancel-in-progress: false
+jobs:
+  crank:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - run: npm ci
+      - run: node crank.mjs --for=20700
+        env:
+          CRANK_SECRET: ${{ secrets.CRANK_SECRET }}
+          RANDOMNESS_SECRET: ${{ secrets.RANDOMNESS_SECRET }}
