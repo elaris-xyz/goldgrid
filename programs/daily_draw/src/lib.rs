@@ -275,6 +275,24 @@ pub mod daily_draw {
         Ok(())
     }
 
+    /// The admin retimes future rounds: the demo's two-minute rounds closed while
+    /// a player was still approving in the wallet. Numbering may only move
+    /// forward (logic::schedule_change_ok), and rounds that already exist keep
+    /// their stored close and draw times.
+    pub fn set_schedule(ctx: Context<SetSchedule>, genesis_ts: i64, round_secs: i64, entry_secs: i64) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let config = &mut ctx.accounts.config;
+        require!(
+            schedule_change_ok(config.genesis_ts, config.round_secs, genesis_ts, round_secs, entry_secs, now),
+            DrawError::BadConfig
+        );
+        config.genesis_ts = genesis_ts;
+        config.round_secs = round_secs;
+        config.entry_secs = entry_secs;
+        emit!(ScheduleChanged { genesis_ts, round_secs, entry_secs });
+        Ok(())
+    }
+
     /// Once every ticket of a settled round is closed, anyone may close the
     /// round; its rent goes back to whoever created it with the first ticket.
     pub fn close_round(ctx: Context<CloseRound>, _round_id: u64) -> Result<()> {
@@ -407,6 +425,13 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SetSchedule<'info> {
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [b"config"], bump = config.bump, has_one = admin @ DrawError::NotAdmin)]
+    pub config: Account<'info, Config>,
+}
+
+#[derive(Accounts)]
 pub struct Fund<'info> {
     pub sponsor: Signer<'info>,
     #[account(mut, seeds = [b"config"], bump = config.bump, has_one = mint)]
@@ -522,6 +547,13 @@ pub struct CloseRound<'info> {
 }
 
 #[event]
+pub struct ScheduleChanged {
+    pub genesis_ts: i64,
+    pub round_secs: i64,
+    pub entry_secs: i64,
+}
+
+#[event]
 pub struct Funded {
     pub sponsor: Pubkey,
     pub amount: u64,
@@ -614,4 +646,6 @@ pub enum DrawError {
     NotCreator,
     #[msg("Only the program's upgrade authority can initialize")]
     NotUpgradeAuthority,
+    #[msg("Only the admin can change the schedule")]
+    NotAdmin,
 }

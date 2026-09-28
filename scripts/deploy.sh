@@ -13,12 +13,14 @@ for attempt in $(seq 1 ${ATTEMPTS:-12}); do
   echo "== attempt $attempt"
   out=$(solana program deploy target/deploy/daily_draw.so        --program-id target/deploy/daily_draw-keypair.json        --buffer "$BUFFER"        --max-sign-attempts 30 --with-compute-unit-price 1000 2>&1)
   echo "$out" | grep -vE '^\s*$' | tail -3
-  if echo "$out" | grep -q "^Program Id: $PROGRAM"; then
+  if echo "$out" | grep -q "Program Id: *$PROGRAM"; then
     solana program show "$PROGRAM" | head -8
     rm -f "$BUFFER"
     solana balance
     exit 0
   fi
+  # Money does not come back by retrying.
+  if echo "$out" | grep -q "insufficient funds"; then break; fi
   sleep 5
 done
 echo "not deployed after $attempt attempts; the buffer is kept for the next run"

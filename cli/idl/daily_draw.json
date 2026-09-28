@@ -720,6 +720,67 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "set_schedule",
+      "docs": [
+        "The admin retimes future rounds: the demo's two-minute rounds closed while",
+        "a player was still approving in the wallet. Numbering may only move",
+        "forward (logic::schedule_change_ok), and rounds that already exist keep",
+        "their stored close and draw times."
+      ],
+      "discriminator": [
+        224,
+        44,
+        153,
+        248,
+        237,
+        182,
+        26,
+        154
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "genesis_ts",
+          "type": "i64"
+        },
+        {
+          "name": "round_secs",
+          "type": "i64"
+        },
+        {
+          "name": "entry_secs",
+          "type": "i64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -854,6 +915,19 @@
         234,
         222
       ]
+    },
+    {
+      "name": "ScheduleChanged",
+      "discriminator": [
+        204,
+        117,
+        118,
+        59,
+        232,
+        227,
+        188,
+        201
+      ]
     }
   ],
   "errors": [
@@ -971,6 +1045,11 @@
       "code": 6022,
       "name": "NotUpgradeAuthority",
       "msg": "Only the program's upgrade authority can initialize"
+    },
+    {
+      "code": 6023,
+      "name": "NotAdmin",
+      "msg": "Only the admin can change the schedule"
     }
   ],
   "types": [
@@ -1325,6 +1404,26 @@
           },
           {
             "name": "Settled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScheduleChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "genesis_ts",
+            "type": "i64"
+          },
+          {
+            "name": "round_secs",
+            "type": "i64"
+          },
+          {
+            "name": "entry_secs",
+            "type": "i64"
           }
         ]
       }

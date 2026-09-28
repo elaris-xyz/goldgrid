@@ -58,9 +58,42 @@ pub fn tickets_allowed(streak: u32) -> u8 {
     (1 + extra).min(MAX_TICKETS_PER_ROUND as u32) as u8
 }
 
+/// A schedule change may only move round numbering forward: the round that is
+/// current under the new schedule must come after every round the old one could
+/// have opened by now, so no past round's id is ever reused, reopened or
+/// rewritten. Rounds that exist keep the close and draw times stored in them.
+pub fn schedule_change_ok(
+    old_genesis: i64,
+    old_secs: i64,
+    new_genesis: i64,
+    new_secs: i64,
+    new_entry: i64,
+    now: i64,
+) -> bool {
+    if new_secs <= 0 || new_entry <= 0 || new_entry >= new_secs || now < new_genesis {
+        return false;
+    }
+    let old_current = if now >= old_genesis { (now - old_genesis) / old_secs } else { -1 };
+    (now - new_genesis) / new_secs > old_current
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_schedule_change_only_moves_rounds_forward() {
+        let (genesis, secs, now) = (1_000, 120, 1_000 + 120 * 50 + 30); // round 50 is current
+        // Ten-minute rounds whose current round is 51: allowed.
+        assert!(schedule_change_ok(genesis, secs, now - 51 * 600, 600, 540, now));
+        // Any numbering that lands on round 50 or earlier again: refused.
+        assert!(!schedule_change_ok(genesis, secs, now - 50 * 600, 600, 540, now));
+        assert!(!schedule_change_ok(genesis, secs, now - 3 * 600, 600, 540, now));
+        // Nonsense schedules and a genesis in the future: refused.
+        assert!(!schedule_change_ok(genesis, secs, now - 51 * 600, 600, 600, now));
+        assert!(!schedule_change_ok(genesis, secs, now - 51 * 600, 0, 0, now));
+        assert!(!schedule_change_ok(genesis, secs, now + 1, 600, 540, now));
+    }
 
     #[test]
     fn picks_must_be_five_distinct_numbers_in_range() {
