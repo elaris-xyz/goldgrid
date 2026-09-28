@@ -30,7 +30,9 @@ free, full stop: a paid entry would make this a lottery.
 | Path | What |
 |---|---|
 | `programs/daily_draw` | Anchor program (Rust). `logic.rs` holds the draw rules, `sgt.rs` the Seeker check |
-| `cli/` | Devnet end-to-end test (`e2e-devnet.mjs`) and the shared client/crank (`lib.mjs`) |
+| `cli/` | Devnet end-to-end test (`e2e-devnet.mjs`), the draw crank (`crank.mjs`), admin scripts, shared client (`lib.mjs`) |
+| `android/` | The app: Kotlin + Compose, Mobile Wallet Adapter |
+| `.github/workflows/crank.yml` | Runs the draw crank on GitHub Actions |
 | `spikes/` | The Switchboard-on-devnet spike that validated the approach |
 | `scripts/` | Toolchain and build helpers (WSL) |
 
@@ -40,13 +42,27 @@ Requires Rust, the Solana CLI (Agave 4.x) and Anchor 0.32.2.
 
 ```bash
 anchor build
-cargo test -p daily_draw --lib        # 11 unit tests, incl. a real mainnet SGT fixture
+cargo test -p daily_draw --lib        # unit tests, incl. a real mainnet SGT fixture
 cd cli && npm install && node e2e-devnet.mjs   # one full night on devnet
 ```
 
 Devnet program: [`gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM`](https://explorer.solana.com/address/gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM?cluster=devnet)
-— demo mode: 2-minute rounds, entries close at 90 s. Only the program's upgrade
-authority can initialize it.
+— demo mode: 10-minute rounds, entries open for 9. Only the program's upgrade
+authority can initialize it; the admin can retime future rounds (`set_schedule`),
+and the program refuses any schedule that would reuse a past round's number.
+
+## Who runs the draw
+
+Nobody has to be trusted to run it, and nobody's computer has to be on. Drawing a
+round (Switchboard commit, reveal, scoring, closing) is permissionless: anyone can
+send those transactions, and the program only accepts randomness committed after
+entries closed and revealed from that same commit. `cli/crank.mjs` does it for
+every round past its draw time; `.github/workflows/crank.yml` runs it on GitHub
+Actions around the clock with a key that pays fees and holds no authority.
+
+```bash
+cd cli && node crank.mjs            # run a crank yourself, beside the hosted one
+```
 
 ## Status
 
