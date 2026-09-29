@@ -25,8 +25,13 @@
       "accounts": [
         {
           "name": "owner",
+          "docs": [
+            "through owner_tokens, the prize. Not a signer: paying a winner is",
+            "permissionless, so the crank pays everyone right after the draw and the",
+            "player never has to come back and sign. Nothing here can route the prize",
+            "or the rent to whoever sends the transaction."
+          ],
           "writable": true,
-          "signer": true,
           "relations": [
             "ticket"
           ]
@@ -184,8 +189,11 @@
       "accounts": [
         {
           "name": "owner",
+          "docs": [
+            "settled ticket with nothing to claim is permissionless for the same reason",
+            "as claim, and it can only ever return the rent to its owner."
+          ],
           "writable": true,
-          "signer": true,
           "relations": [
             "ticket"
           ]

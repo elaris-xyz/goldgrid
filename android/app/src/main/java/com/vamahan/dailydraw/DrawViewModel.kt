@@ -20,6 +20,7 @@ import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
 import com.vamahan.dailydraw.draw.MessageCompiler
+import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.draw.SeekerState
 import com.vamahan.dailydraw.draw.Sgt
 import com.vamahan.dailydraw.solana.SolanaRpc
@@ -186,12 +187,17 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         val rounds = HashMap<Long, DrawRound>()
         current?.let { rounds[id] = it }
         previous?.let { rounds[id - 1] = it }
-        val missing = live.map { it.second.round }.distinct().filter { it !in rounds }
+        // Remembered tickets that are gone were paid or returned by the crank; their
+        // round (kept an hour after the draw) says which.
+        val watchedFrom = id - WATCHED_ROUNDS + 1
+        val liveKeys = live.map { (slot, t) -> "${t.round}:${slot.second}" }.toSet()
+        val vanished = _state.value.results.filter { it.ticket != null && it.round >= watchedFrom && it.key !in liveKeys }
+        val missing = (live.map { it.second.round } + vanished.map { it.round }).distinct().filter { it !in rounds }
         rpc.multipleAccounts(missing.map { DrawProgram.round(it).base58() }).zip(missing)
             .forEach { (raw, rid) -> raw?.let { rounds[rid] = DrawRound.decode(it) } }
 
         val onChain = live.map { (slot, t) -> MyResult.of(t, slot.second, rounds[t.round], now, config.drawTs(t.round)) }
-        merge(owner, onChain, watchedFrom = id - WATCHED_ROUNDS + 1, seeker = seeker, skr = skr)
+        merge(owner, onChain, watchedFrom, rounds, seeker = seeker, skr = skr)
         if (fullClock || _state.value.lamports == null || (_state.value.lamports ?: 0) < LOW_SOL_LAMPORTS) {
             val lamports = rpc.lamports(owner)
             _state.update { it.copy(lamports = lamports) }
@@ -204,15 +210,28 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
      * was claimed, anything else had its deposit returned. Results outside the
      * watched window stay as remembered.
      */
-    private fun merge(owner: String, onChain: List<MyResult>, watchedFrom: Long, seeker: SeekerState?, skr: Long?) {
+    private fun merge(
+        owner: String,
+        onChain: List<MyResult>,
+        watchedFrom: Long,
+        rounds: Map<Long, DrawRound>,
+        seeker: SeekerState?,
+        skr: Long?,
+    ) {
         val before = _state.value.results.associateBy { it.key }
         val chainKeys = onChain.map { it.key }.toSet()
         val closed = before.values.filter { it.key !in chainKeys && it.round >= watchedFrom && it.ticket != null }
-            .map { it.copy(ticket = null, outcome = if (it.outcome == Outcome.Won) Outcome.Claimed else it.outcome) }
+            .map { r ->
+                val round = rounds[r.round]
+                when {
+                    round?.status == RoundStatus.Settled -> MyResult.closed(r.round, r.index, r.picks, round)
+                    else -> r.copy(ticket = null, outcome = if (r.outcome == Outcome.Won) Outcome.Claimed else r.outcome)
+                }
+            }
         val kept = before.values.filter { it.key !in chainKeys && (it.round < watchedFrom || it.ticket == null) }
         val results = (onChain + closed + kept)
             .sortedWith(compareByDescending<MyResult> { it.round }.thenBy { it.index })
-        val fresh = onChain.filter { r ->
+        val fresh = (onChain + closed).filter { r ->
             val was = before[r.key]?.outcome
             (was == Outcome.Waiting || was == Outcome.Drawing) && r.outcome != Outcome.Waiting && r.outcome != Outcome.Drawing
         }.map { it.key }
@@ -328,7 +347,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             val ticket = DrawProgram.ticket(s.roundId, SolanaPublicKey.from(identity.key), index).base58()
             // Chain time to device time, then a little slack for the crank.
             val at = (config.drawTs(s.roundId) - s.clockOffset) * 1000 + RESULT_SLACK_MS
-            ResultAlarm.schedule(getApplication(), s.roundId, index, ticket, at)
+            ResultAlarm.schedule(getApplication(), s.roundId, index, ticket, picks, at)
         }
     }
 
@@ -462,6 +481,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             // in its payload, and a bare "blockhash" match called a program error expired.
             "blockhash not found" in text.lowercase() -> "The transaction expired before it was sent. Try again."
             authorizationRefused(e) -> WALLET_REFUSED
+            // The wallet ended the session without an answer (closed, backgrounded,
+            // or it gave up): nothing was signed and nothing was sent.
+            e is java.util.concurrent.CancellationException ->
+                "The wallet closed before signing, so nothing was sent. Try again."
             "429" in text || "too many requests" in text.lowercase() ->
                 "Solana devnet is busy right now. Wait a few seconds and try again."
             else -> text.take(120)

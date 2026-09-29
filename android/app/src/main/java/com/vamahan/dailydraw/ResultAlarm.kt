@@ -18,6 +18,7 @@ import android.util.Log
 import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
+import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.solana.SolanaRpc
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,9 +41,10 @@ object ResultAlarm {
     private const val WHITE = 0xFFFFFFFF.toInt()
     internal const val MAX_TRIES = 15
 
-    fun schedule(context: Context, round: Long, index: Int, ticket: String, atMillis: Long, attempt: Int = 0) {
+    fun schedule(context: Context, round: Long, index: Int, ticket: String, picks: List<Int>, atMillis: Long, attempt: Int = 0) {
         val intent = Intent(context, ResultReceiver::class.java)
-            .putExtra("round", round).putExtra("index", index).putExtra("ticket", ticket).putExtra("attempt", attempt)
+            .putExtra("round", round).putExtra("index", index).putExtra("ticket", ticket)
+            .putExtra("picks", picks.toIntArray()).putExtra("attempt", attempt)
         val pending = PendingIntent.getBroadcast(
             context, (round * 8 + index).toInt(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -52,27 +54,33 @@ object ResultAlarm {
             .setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, pending)
     }
 
-    internal suspend fun check(context: Context, round: Long, index: Int, ticket: String, attempt: Int) {
+    internal suspend fun check(context: Context, round: Long, index: Int, ticket: String, picks: List<Int>, attempt: Int) {
         val rpc = SolanaRpc(BuildConfig.RPC_URL)
         val (roundData, ticketData) = rpc.multipleAccounts(listOf(DrawProgram.round(round).base58(), ticket))
-        val r = roundData?.let(DrawRound::decode)
+        // No round: it was closed an hour after its draw, far too late to announce.
+        val r = roundData?.let(DrawRound::decode) ?: return
         val t = ticketData?.let { DrawTicket.decode(ticket, it) }
-        if (r == null || t == null) return // claimed or closed already: nothing left to tell
-        val result = MyResult.of(t, index, r, now = Long.MAX_VALUE, scheduledDraw = r.drawTs)
+        val result = when {
+            t != null -> MyResult.of(t, index, r, now = Long.MAX_VALUE, scheduledDraw = r.drawTs)
+            r.status == RoundStatus.Settled -> MyResult.closed(round, index, picks, r)
+            else -> null
+        }
+        if (result == null || result.outcome == Outcome.Waiting || result.outcome == Outcome.Drawing) {
+            if (attempt < MAX_TRIES) schedule(context, round, index, ticket, picks, System.currentTimeMillis() + RETRY_MS, attempt + 1)
+            return
+        }
         val (title, text) = when (result.outcome) {
             Outcome.Won -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
-                "Round #$round: ${result.matches} of your numbers came up and nobody did better. Tap to claim."
+                "Round #$round: ${result.matches} of your numbers came up and nobody did better. Tap to collect it."
+            Outcome.Claimed -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
+                "Round #$round: ${result.matches} of your numbers came up and nobody did better. It's already in your wallet."
             Outcome.Matched -> "So close — ${result.matches} matched" to
                 "Round #$round went to a ticket with ${result.best}. A new round is open now."
             Outcome.NoMatch -> "Round #$round is drawn" to
                 "No match this time. The next round is open — keep your streak going."
-            Outcome.Claimed -> return
-            Outcome.Waiting, Outcome.Drawing -> {
-                if (attempt < MAX_TRIES) schedule(context, round, index, ticket, System.currentTimeMillis() + RETRY_MS, attempt + 1)
-                return
-            }
+            Outcome.Waiting, Outcome.Drawing -> return // handled above
         }
-        notify(context, round, title, text, ballsPicture(r.winning, t.picks))
+        notify(context, round, title, text, ballsPicture(r.winning, picks))
     }
 
     /**
@@ -140,14 +148,15 @@ class ResultReceiver : BroadcastReceiver() {
         val round = intent.getLongExtra("round", -1)
         val index = intent.getIntExtra("index", 0)
         val ticket = intent.getStringExtra("ticket") ?: return done.finish()
+        val picks = intent.getIntArrayExtra("picks")?.toList() ?: return done.finish()
         val attempt = intent.getIntExtra("attempt", 0)
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                ResultAlarm.check(context.applicationContext, round, index, ticket, attempt)
+                ResultAlarm.check(context.applicationContext, round, index, ticket, picks, attempt)
             } catch (e: Exception) {
                 Log.w("DailyDraw", "result check failed", e)
                 if (attempt < ResultAlarm.MAX_TRIES) {
-                    ResultAlarm.schedule(context, round, index, ticket, System.currentTimeMillis() + ResultAlarm.RETRY_MS, attempt + 1)
+                    ResultAlarm.schedule(context, round, index, ticket, picks, System.currentTimeMillis() + ResultAlarm.RETRY_MS, attempt + 1)
                 }
             } finally {
                 done.finish()

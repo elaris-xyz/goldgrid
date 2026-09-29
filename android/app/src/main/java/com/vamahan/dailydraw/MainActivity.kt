@@ -414,7 +414,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
                 Outcome.NoMatch -> "No match this time" to Muted
                 Outcome.Matched -> "${r.matches} matched · the winner had ${r.best}" to Muted
                 Outcome.Won -> "You won ${formatSkr(r.prize)} SKR!" to Win
-                Outcome.Claimed -> "Won ${formatSkr(r.prize)} SKR · claimed ✓" to Win
+                Outcome.Claimed -> "Won ${formatSkr(r.prize)} SKR · paid to your wallet ✓" to Win
             }
             if (r.outcome == Outcome.Drawing) {
                 CircularProgressIndicator(Modifier.size(14.dp), color = Gold, strokeWidth = 2.dp)
@@ -575,7 +575,7 @@ private fun HowItWorks() {
             "Pick 5 numbers from 1 to 85. One free ticket per round — per Seeker Genesis Token on mainnet.",
             "Play every day: each 7-day streak adds a ticket, up to 5.",
             "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
-            "The best match wins the pot and ties split it. No match? The pot rolls over.",
+            "The best match wins the pot and ties split it; the prize goes straight to the winner's wallet. No match? The pot rolls over.",
             "This demo runs on devnet with a round every few minutes; prizes are test SKR.",
         ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
     }

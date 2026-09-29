@@ -509,8 +509,13 @@ pub struct ScoreTickets<'info> {
 #[derive(Accounts)]
 #[instruction(round_id: u64)]
 pub struct Claim<'info> {
+    /// CHECK: the ticket's owner (has_one below); receives the ticket's rent and,
+    /// through owner_tokens, the prize. Not a signer: paying a winner is
+    /// permissionless, so the crank pays everyone right after the draw and the
+    /// player never has to come back and sign. Nothing here can route the prize
+    /// or the rent to whoever sends the transaction.
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub owner: UncheckedAccount<'info>,
     #[account(seeds = [b"config"], bump = config.bump, has_one = mint)]
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
@@ -528,8 +533,11 @@ pub struct Claim<'info> {
 #[derive(Accounts)]
 #[instruction(round_id: u64)]
 pub struct CloseTicket<'info> {
+    /// CHECK: the ticket's owner (has_one below), who gets the rent back. Closing a
+    /// settled ticket with nothing to claim is permissionless for the same reason
+    /// as claim, and it can only ever return the rent to its owner.
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub owner: UncheckedAccount<'info>,
     #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
     pub round: Account<'info, Round>,
     #[account(mut, has_one = owner, close = owner, constraint = ticket.round == round_id @ DrawError::BadTicket)]

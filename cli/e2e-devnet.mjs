@@ -192,7 +192,8 @@ if (!skipAttack) {
 }
 
 // 6. The draw, then scoring, exactly as the app would run it.
-round = await crankRound(program, admin, id);
+// The crank would pay everyone at once; hold that back to test payouts one by one.
+round = await crankRound(program, admin, id, { payout: false, keepSecs: 0 });
 log(`winning numbers: ${round.winning.join(" ")}  best=${round.best} winners=${round.winners} share=${round.share.toNumber() / SKR} SKR`);
 check("settled" in round.status, "round settled after scoring");
 
@@ -202,22 +203,27 @@ check(all.every((t) => t.account.matches === t.account.picks.filter((n) => round
 const best = Math.max(...all.map((t) => t.account.matches));
 check(round.best === best, `best match recorded (${round.best}) equals the recount (${best})`);
 
-// 7. Winners claim (which also returns the ticket's rent); everyone else closes
-//    their ticket for the rent. Losers cannot claim, and winners cannot skip paying.
+// 7. Paying out is permissionless and only ever pays the ticket's owner. Here a
+//    stranger (the admin, who signs nothing for the players) sends every payout:
+//    prizes and rent must land with the players, never with the sender. Losers
+//    cannot claim, winners cannot be closed unpaid, and a claim cannot be
+//    redirected to the sender's own token account.
 config = await program.account.config.fetch(configPda());
+const strangerAta = await getOrCreateAssociatedTokenAccount(connection, admin, mint, admin.publicKey);
 for (const t of mine(all)) {
   const player = players.find((p) => p.publicKey.equals(t.account.owner));
   const short = player.publicKey.toBase58().slice(0, 6);
   const ata = await getOrCreateAssociatedTokenAccount(connection, admin, mint, player.publicKey);
   const accounts = { owner: player.publicKey, ticket: t.publicKey, mint, ownerTokens: ata.address, tokenProgram: TOKEN_PROGRAM_ID };
-  const claim = () => program.methods.claim(new BN(id)).accountsPartial(accounts).signers([player]).rpc();
-  const close = () => program.methods.closeTicket(new BN(id)).accountsPartial({ owner: player.publicKey, ticket: t.publicKey }).signers([player]).rpc();
+  const claim = (to = ata.address) => program.methods.claim(new BN(id)).accountsPartial({ ...accounts, ownerTokens: to }).rpc();
+  const close = () => program.methods.closeTicket(new BN(id)).accountsPartial({ owner: player.publicKey, ticket: t.publicKey }).rpc();
   const lamportsBefore = await connection.getBalance(player.publicKey);
   if (round.best > 0 && t.account.matches === round.best) {
-    await expectError(close(), "UnclaimedPrize", `winner ${short} cannot close before claiming`);
+    await expectError(close(), "UnclaimedPrize", `winner ${short} cannot be closed before being paid`);
+    await expectError(claim(strangerAta.address), "ConstraintTokenOwner", `a stranger cannot redirect ${short}'s prize to themselves`);
     await claim();
     const bal = (await getAccount(connection, ata.address)).amount;
-    check(Number(bal) === round.share.toNumber(), `winner ${short} received ${Number(bal) / SKR} SKR`);
+    check(Number(bal) === round.share.toNumber(), `winner ${short} received ${Number(bal) / SKR} SKR from a stranger's transaction`);
   } else {
     await expectError(claim(), "NotAWinner", `non-winner ${short} cannot claim`);
     await close();
@@ -230,7 +236,7 @@ if (round.best === 0) log(`nobody matched: the pot of ${round.pot.toNumber() / S
 // 8. With every ticket closed, the round closes and its rent goes to its creator.
 round = await program.account.round.fetch(roundPda(id));
 if (round.openTickets === 0) {
-  await crankRound(program, admin, id);
+  await crankRound(program, admin, id, { keepSecs: 0 });
   check((await connection.getAccountInfo(roundPda(id))) === null, "round closed once all its tickets were closed");
 } else {
   log(`round ${id} still has ${round.openTickets} open tickets from other players; not closed`);

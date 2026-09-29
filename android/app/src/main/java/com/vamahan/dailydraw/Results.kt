@@ -37,6 +37,27 @@ data class MyResult(
     val canReturnDeposit get() = (outcome == Outcome.NoMatch || outcome == Outcome.Matched) && ticket != null
 
     companion object {
+        /**
+         * The result of a ticket whose account is gone: the crank pays winners and
+         * returns losers' deposits right after the draw, so the ticket is often
+         * closed before the app or the notification looks. The round (kept for an
+         * hour) and the picks the player made are enough to say what happened.
+         */
+        fun closed(round: Long, index: Int, picks: List<Int>, r: DrawRound): MyResult {
+            val matches = picks.count { it in r.winning }
+            val won = r.best > 0 && matches == r.best
+            return MyResult(
+                round, index, picks,
+                outcome = when {
+                    won -> Outcome.Claimed
+                    matches > 0 -> Outcome.Matched
+                    else -> Outcome.NoMatch
+                },
+                winning = r.winning, matches = matches, best = r.best,
+                prize = if (won) r.share else 0, drawTs = r.drawTs, ticket = null,
+            )
+        }
+
         fun of(ticket: DrawTicket, index: Int, round: DrawRound?, now: Long, scheduledDraw: Long): MyResult {
             val drawTs = round?.drawTs?.takeIf { it > 0 } ?: scheduledDraw
             val base = MyResult(ticket.round, index, ticket.picks, Outcome.Waiting, drawTs = drawTs, ticket = ticket.address)

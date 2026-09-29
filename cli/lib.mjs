@@ -13,6 +13,7 @@ import {
   Transaction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
+import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import fs from "node:fs";
 
 const { AnchorProvider, BN, Program, Wallet } = anchor;
@@ -165,7 +166,45 @@ export async function revealRound(program, payer, id, randomnessKey, attempts = 
  * randomness can no longer reveal it (re-committed, or the oracle is gone) is
  * replaced with fresh randomness after REVEAL_TIMEOUT_SLOTS.
  */
-export async function crankRound(program, payer, id) {
+/**
+ * A settled round's winning numbers stay readable this long before the crank
+ * closes the round: the app and its result notification read them from the
+ * round after the payout has already closed the player's ticket.
+ */
+export const ROUND_KEEP_SECS = 3600;
+
+/**
+ * Pays every winner of a settled round and returns every other ticket's rent,
+ * so no player has to come back and sign. Permissionless: the program sends the
+ * prize and the rent only to each ticket's owner, whoever sends the transaction.
+ */
+export async function payoutRound(program, payer, id, round) {
+  const connection = program.provider.connection;
+  const config = await program.account.config.fetch(configPda());
+  const tokenProgram = (await connection.getAccountInfo(config.mint)).owner;
+  for (const t of await ticketsOf(program, id)) {
+    const owner = t.account.owner;
+    const who = owner.toBase58().slice(0, 6);
+    const won = round.best > 0 && t.account.matches === round.best && !t.account.claimed;
+    const ixs = [];
+    if (won) {
+      const ata = getAssociatedTokenAddressSync(config.mint, owner, true, tokenProgram);
+      ixs.push(createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, ata, owner, config.mint, tokenProgram));
+      ixs.push(await program.methods.claim(new BN(id))
+        .accountsPartial({ owner, ticket: t.publicKey, mint: config.mint, ownerTokens: ata, tokenProgram }).instruction());
+    } else {
+      ixs.push(await program.methods.closeTicket(new BN(id)).accountsPartial({ owner, ticket: t.publicKey }).instruction());
+    }
+    try {
+      await send(connection, ixs, [payer], `round ${id}: ${won ? `paid ${round.share.toNumber() / 1e6} SKR to` : "returned the deposit of"} ${who}`);
+    } catch (e) {
+      log(`round ${id}: payout to ${who} failed: ${(e.message ?? String(e)).slice(0, 160)}`);
+    }
+  }
+  return program.account.round.fetch(roundPda(id));
+}
+
+export async function crankRound(program, payer, id, { payout = true, keepSecs = ROUND_KEEP_SECS } = {}) {
   const connection = program.provider.connection;
   let round = await program.account.round.fetch(roundPda(id));
 
@@ -212,7 +251,12 @@ export async function crankRound(program, payer, id) {
     round = await program.account.round.fetch(roundPda(id));
   }
 
-  if ("settled" in round.status && round.openTickets === 0) {
+  if (payout && "settled" in round.status && round.openTickets > 0) {
+    round = await payoutRound(program, payer, id, round);
+  }
+
+  const keptLongEnough = (await chainNow(connection)) >= round.drawTs.toNumber() + keepSecs;
+  if ("settled" in round.status && round.openTickets === 0 && keptLongEnough) {
     const ix = await program.methods.closeRound(new BN(id)).accountsPartial({ creator: round.creator }).instruction();
     await send(connection, [ix], [payer], `round ${id}: closed, rent back to its creator`);
   }

@@ -25,7 +25,8 @@ async function pass() {
     .map((r) => r.account)
     // Each round carries its own draw time: a schedule change must not move it.
     .filter((r) => now >= r.drawTs.toNumber())
-    .filter((r) => !("settled" in r.status) || r.openTickets === 0)
+    // Settled rounds stay on the list until every ticket is paid or returned and
+    // the round itself is closed.
     .sort((a, b) => a.id.toNumber() - b.id.toNumber());
   for (const r of pending) {
     const id = r.id.toNumber();
