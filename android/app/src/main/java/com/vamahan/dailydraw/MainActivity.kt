@@ -10,6 +10,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,7 +30,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,6 +51,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.produceState
@@ -80,6 +85,9 @@ private val Muted = Color(0xFF8A8F9C)
 private val Win = Color(0xFF4ADE80)
 private val Alert = Color(0xFFF87171)
 private const val CLOSING_SECS = 30
+/** Past this the screen stops stretching: a tablet shows a phone-width column. */
+private val MAX_CONTENT_WIDTH = 640.dp
+private const val RECENT_ON_MAIN = 3
 
 class MainActivity : ComponentActivity() {
     private val vm: DrawViewModel by viewModels()
@@ -142,43 +150,63 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
     val picking = open && left > 0
     if (picking) ShakeToPick { vm.quickPick() }
 
-    Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbar) }) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .statusBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Header(s, onConnect = { vm.connect(sender) })
-            if (s.networkTrouble) {
-                Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
-            }
-            NowCard(s, now, open, left)
-            s.error?.let { ErrorCard(it, onDismiss = vm::dismissError) }
-            if (s.lowSol) LowSolCard(busy = "airdrop" in s.pending, onAirdrop = vm::airdrop)
-            if (picking) {
-                PickArea(s, now, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection) {
-                    if (s.wallet == null) vm.connect(sender) else vm.enter(sender)
+    var showActivity by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showActivity) { showActivity = false }
+
+    Scaffold(
+        containerColor = Ink,
+        snackbarHost = { SnackbarHost(snackbar) },
+        // The action stays on screen: on a tablet the grid alone is taller than the view.
+        bottomBar = {
+            if (!showActivity && picking) ActionBar(s, now) { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) }
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
+            Column(
+                Modifier
+                    .widthIn(max = MAX_CONTENT_WIDTH)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                if (showActivity) {
+                    ActivityPage(s, now, onBack = { showActivity = false }, onClaim = { vm.claim(sender, it) },
+                        onCollect = { vm.collect(sender) }, onRevealed = vm::revealed)
+                    return@Column
                 }
+                Header(s, onConnect = { vm.connect(sender) }, onBalance = { showActivity = true })
+                if (s.networkTrouble) {
+                    Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
+                }
+                NowCard(s, now, open, left)
+                s.error?.let { ErrorCard(it, onDismiss = vm::dismissError) }
+                if (s.lowSol) LowSolCard(busy = "airdrop" in s.pending, onAirdrop = vm::airdrop)
+                if (picking) PickArea(s, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection)
+                Results(s, now, onClaim = { vm.claim(sender, it) }, onCollect = { vm.collect(sender) },
+                    onRevealed = vm::revealed, onSeeAll = { showActivity = true })
+                HowItWorks()
+                Spacer(Modifier.height(24.dp))
             }
-            Results(s, now, onClaim = { vm.claim(sender, it) }, onCollect = { vm.collect(sender) }, onRevealed = vm::revealed)
-            HowItWorks()
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-private fun Header(s: UiState, onConnect: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f)) {
             Text("Daily Draw", color = Gold, fontSize = 24.sp, fontWeight = FontWeight.Black)
             Text("Free draw for Seeker owners · devnet demo", color = Muted, fontSize = 12.sp)
         }
         val w = s.wallet
+        if (w != null) {
+            // The prize balance is its own chip: tapping it shows where every SKR came from.
+            Box(
+                Modifier.clip(RoundedCornerShape(20.dp)).background(Gold).clickable(onClick = onBalance)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) { Text("${formatSkr(s.skr ?: 0)} SKR", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+        }
         Box(
             Modifier
                 .clip(RoundedCornerShape(20.dp))
@@ -188,7 +216,7 @@ private fun Header(s: UiState, onConnect: () -> Unit) {
         ) {
             Text(
                 when {
-                    w != null -> "${w.take(4)}…${w.takeLast(4)} · ${formatSkr(s.skr ?: 0)} SKR"
+                    w != null -> "${w.take(4)}…${w.takeLast(4)}"
                     "connect" in s.pending -> "Connecting…"
                     else -> "Connect wallet"
                 },
@@ -220,7 +248,15 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
             Text(clock(secs), color = Gold, fontSize = 34.sp, fontWeight = FontWeight.Black)
         }
         val pot = s.round?.pot ?: config.carry
-        Text("Prize pot ${formatSkr(pot)} SKR · ${s.round?.tickets ?: 0} ticket(s)", color = Color.White, fontSize = 15.sp)
+        val tickets = s.round?.tickets ?: 0
+        val rolled = (pot - config.perTicketBonus * tickets).coerceAtLeast(0)
+        Text("Prize pot ${formatSkr(pot)} SKR", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "${formatSkr(config.perTicketBonus)} SKR per ticket × $tickets" +
+                (if (rolled > 0) " + ${formatSkr(rolled)} rolled over from rounds nobody won" else "") +
+                ". The best match takes the whole pot; ties split it.",
+            color = Muted, fontSize = 13.sp,
+        )
         val mine = s.resultsIn(s.roundId)
         Text(
             when {
@@ -239,11 +275,9 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
 @Composable
 private fun PickArea(
     s: UiState,
-    now: Long,
     onToggle: (Int) -> Unit,
     onQuickPick: () -> Unit,
     onClear: () -> Unit,
-    onEnter: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Your numbers  ${s.selection.size}/${DrawProgram.PICKS} · or shake the phone", color = Color.White, fontWeight = FontWeight.Bold)
@@ -252,17 +286,24 @@ private fun PickArea(
             OutlinedButton(onClick = onQuickPick, modifier = Modifier.weight(1f)) { Text("Quick pick") }
             OutlinedButton(onClick = onClear, enabled = s.selection.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("Clear") }
         }
-        val entering = "enter" in s.pending
-        val needsSgt = s.wallet != null && s.identity == null && s.config?.requireSgt == true
-        val ready = s.selection.size == DrawProgram.PICKS
-        // A wallet approval takes 10-60 s; entering in the last seconds only ends
-        // in "entries closed" after the player has already approved.
-        val closing = s.config?.let { it.closeTs(s.roundId) - now < CLOSING_SECS } ?: false
+    }
+}
+
+/** The one thing to do next, pinned to the bottom of the screen. */
+@Composable
+private fun ActionBar(s: UiState, now: Long, onEnter: () -> Unit) {
+    val entering = "enter" in s.pending
+    val needsSgt = s.wallet != null && s.identity == null && s.config?.requireSgt == true
+    val ready = s.selection.size == DrawProgram.PICKS
+    // A wallet approval takes 10-60 s; entering in the last seconds only ends
+    // in "entries closed" after the player has already approved.
+    val closing = s.config?.let { it.closeTs(s.roundId) - now < CLOSING_SECS } ?: false
+    Box(Modifier.fillMaxWidth().background(Ink).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
         Button(
             onClick = onEnter,
             enabled = !entering && !closing && "connect" !in s.pending && !needsSgt && (s.wallet == null || ready),
             colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
-            modifier = Modifier.fillMaxWidth().height(54.dp),
+            modifier = Modifier.widthIn(max = MAX_CONTENT_WIDTH).fillMaxWidth().height(56.dp),
         ) {
             if (entering) {
                 CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
@@ -319,6 +360,8 @@ private fun Results(
     onClaim: (MyResult) -> Unit,
     onCollect: () -> Unit,
     onRevealed: (String) -> Unit,
+    onSeeAll: (() -> Unit)? = null,
+    limit: Int = RECENT_ON_MAIN,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Your tickets", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -337,8 +380,13 @@ private fun Results(
                 Text(if (busy) "Returning deposits…" else "Get back the SOL deposit of $returnable finished ticket(s)")
             }
         }
-        s.results.take(12).forEach { r ->
+        // Anything waiting for the player (a prize to claim) is never hidden behind "see all".
+        val shown = (s.results.take(limit) + s.results.filter { it.canClaim }).distinct()
+        shown.forEach { r ->
             ResultCard(r, now, s, pending = r.key in s.pending, fresh = r.key in s.freshlyDrawn, onClaim = { onClaim(r) }, onRevealed = { onRevealed(r.key) })
+        }
+        if (onSeeAll != null && s.results.size > shown.size) {
+            OutlinedButton(onClick = onSeeAll, modifier = Modifier.fillMaxWidth()) { Text("See all activity (${s.results.size}) →") }
         }
     }
 }
@@ -355,7 +403,10 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Column(Modifier.weight(1f)) {
+                Text("Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold)
+                if (r.drawTs > 0) Text(when_(r.drawTs), color = Muted, fontSize = 12.sp)
+            }
             val drawIn = (if (r.drawTs > 0) r.drawTs else s.config?.drawTs(r.round) ?: now) - now
             val (label, color) = when (r.outcome) {
                 Outcome.Waiting -> "Draw in ${clock(drawIn.coerceAtLeast(0))}" to Muted
@@ -484,6 +535,35 @@ private fun Ball(label: String, fill: Color, text: Color) {
     ) { Text(label, color = text, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
 }
 
+/** Every ticket the player has had, newest first, and what it earned. */
+@Composable
+private fun ActivityPage(
+    s: UiState,
+    now: Long,
+    onBack: () -> Unit,
+    onClaim: (MyResult) -> Unit,
+    onCollect: () -> Unit,
+    onRevealed: (String) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("←", color = Gold, fontSize = 26.sp, modifier = Modifier.clickable(onClick = onBack).padding(end = 14.dp))
+        Text("Activity", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+    val won = s.results.filter { it.outcome == Outcome.Won || it.outcome == Outcome.Claimed }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text("${formatSkr(s.skr ?: 0)} SKR in your wallet", color = Gold, fontSize = 20.sp, fontWeight = FontWeight.Black)
+        Text(
+            "Won ${formatSkr(won.sumOf { it.prize })} SKR in ${won.size} of ${s.results.size} tickets · " +
+                "${won.count { it.outcome == Outcome.Claimed }} claimed",
+            color = Muted, fontSize = 13.sp,
+        )
+    }
+    Results(s, now, onClaim, onCollect, onRevealed, onSeeAll = null, limit = Int.MAX_VALUE)
+}
+
 @Composable
 private fun HowItWorks() {
     Column(
@@ -502,6 +582,10 @@ private fun HowItWorks() {
 }
 
 private fun clock(secs: Long) = "%02d:%02d".format(secs / 60, secs % 60)
+
+/** A draw time (chain seconds) in the device's own date format. */
+private fun when_(unixSecs: Long): String =
+    java.text.SimpleDateFormat("EEE d MMM · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(unixSecs * 1000))
 
 /** A firm shake picks five random numbers, the phone-native quick pick. */
 @Composable
