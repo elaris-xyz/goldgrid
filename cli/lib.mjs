@@ -18,7 +18,21 @@ import fs from "node:fs";
 
 const { AnchorProvider, BN, Program, Wallet } = anchor;
 
-export const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+/**
+ * The keyed endpoint the app uses, from android/local.properties (git-ignored), so
+ * a local run gets the same RPC as the app without the key living in the repo.
+ */
+function localRpc() {
+  try {
+    const props = fs.readFileSync(new URL("../android/local.properties", import.meta.url), "utf8");
+    const line = props.split(/\r?\n/).find((l) => l.startsWith("rpc.url="));
+    return line?.slice("rpc.url=".length).trim().replaceAll("\\:", ":");
+  } catch {
+    return undefined;
+  }
+}
+
+export const RPC = process.env.RPC_URL ?? localRpc() ?? "https://api.devnet.solana.com";
 export const idl = JSON.parse(fs.readFileSync(new URL("./idl/daily_draw.json", import.meta.url), "utf8"));
 export const PROGRAM_ID = new PublicKey(idl.address);
 export const SGT_GROUP = new PublicKey("GT22s89nU4iWFkNXj1Bw6uYhJJWDRPpShHt4Bk8f99Te");
@@ -118,7 +132,9 @@ export async function switchboardProgram() {
  * file; `fresh` makes a new one when Switchboard refuses to re-commit the old.
  */
 export async function crankerRandomness(program, payer, sbProgram, { fresh = false } = {}) {
-  const file = new URL("./.randomness-keypair.json", import.meta.url);
+  // One randomness account per payer: its authority is whoever created it, so the
+  // crank's and the admin's (the e2e test's) must never be the same file.
+  const file = new URL(`./.randomness-${payer.publicKey.toBase58().slice(0, 8)}.json`, import.meta.url);
   const config = await program.account.config.fetch(configPda());
   // In CI there is no file to keep it in: the keypair comes from a secret.
   const fromEnv = process.env.RANDOMNESS_SECRET;
