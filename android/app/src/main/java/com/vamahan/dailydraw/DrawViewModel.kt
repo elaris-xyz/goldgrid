@@ -602,7 +602,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         DrawError.from(text)?.let { return it.userMessage }
         return when {
             chain.any { it is WalletDismissed } -> "Cancelled in your wallet — nothing was signed or sent."
-            chain.any { it is java.util.concurrent.CancellationException || it is java.util.concurrent.TimeoutException } ->
+            // A cancel in the wallet, a back press, or the wallet closing the session.
+            chain.any { it is java.util.concurrent.CancellationException } ->
+                "The wallet closed without signing, so nothing was sent. Your numbers are kept — try again when you're ready."
+            chain.any { it is java.util.concurrent.TimeoutException } ->
                 "Your wallet didn't answer in time, so nothing was signed or sent. Try again when you're ready."
             authorizationRefused(e) -> WALLET_REFUSED
             "insufficient" in lower -> "Not enough devnet SOL for the fee. Use \"Get free devnet SOL\" and try again."
