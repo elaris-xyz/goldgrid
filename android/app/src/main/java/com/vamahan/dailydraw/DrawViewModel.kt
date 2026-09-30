@@ -90,8 +90,9 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private val session = Session(app)
     private val wallet = MobileWalletAdapter(
         connectionIdentity = ConnectionIdentity(
-            identityUri = Uri.parse("https://github.com/vamahan"),
-            iconUri = Uri.parse("favicon.ico"),
+            // Our own page: the wallet shows this site and its icon when the app connects.
+            identityUri = Uri.parse("https://elaris-xyz.github.io/daily-draw/"),
+            iconUri = Uri.parse("icon.png"),
             identityName = "Goldgrid",
         ),
     ).apply { blockchain = Solana.Devnet }
