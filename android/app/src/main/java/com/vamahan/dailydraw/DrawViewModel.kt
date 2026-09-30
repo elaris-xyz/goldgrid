@@ -37,6 +37,8 @@ import java.nio.ByteOrder
 /** Below this a ticket's refundable deposit and the fee may not fit: the app offers the faucet. */
 const val LOW_SOL_LAMPORTS = 5_000_000L
 
+private class AccountSwitched(val account: String) : Exception("wallet switched to $account")
+
 /** Who the program counts as "one Seeker": the SGT mint, or the wallet in demo mode. */
 data class Identity(val key: String, val sgtTokens: String?)
 
@@ -83,6 +85,7 @@ data class UiState(
 class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private val rpc = SolanaRpc(BuildConfig.RPC_URL)
     private val store = ResultStore(app)
+    private val session = Session(app)
     private val wallet = MobileWalletAdapter(
         connectionIdentity = ConnectionIdentity(
             identityUri = Uri.parse("https://github.com/vamahan"),
@@ -97,6 +100,22 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     /** PDAs by (round, index) for the current identity, and the player's token account. */
     private val ticketAddresses = HashMap<Pair<Long, Int>, String>()
     private var tokenAccount: String? = null
+    private var configData: ByteArray? = null
+
+    init {
+        // Open ready: the last config and chain-clock offset draw the round and the
+        // grid at once, and a wallet stays connected until the player disconnects.
+        val saved = session.configData?.let { runCatching { DrawConfig.decode(it) }.getOrNull() }
+        configData = session.configData
+        val wallet = session.wallet
+        _state.update {
+            it.copy(
+                config = saved, tokenProgram = session.tokenProgram, clockOffset = session.clockOffset,
+                roundId = saved?.roundAt(System.currentTimeMillis() / 1000 + session.clockOffset) ?: 0,
+                wallet = wallet, results = wallet?.let(store::load).orEmpty(),
+            )
+        }
+    }
 
     fun start() {
         if (poller?.isActive == true) return
@@ -136,7 +155,9 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun refresh(fullClock: Boolean) {
         if (fullClock) {
             val chain = rpc.chainTime()
-            _state.update { it.copy(clockOffset = chain - System.currentTimeMillis() / 1000) }
+            val offset = chain - System.currentTimeMillis() / 1000
+            session.clockOffset = offset
+            _state.update { it.copy(clockOffset = offset) }
         }
         val known = _state.value.config ?: run {
             val raw = rpc.accountData(DrawProgram.config().base58())
@@ -146,7 +167,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             }
             DrawConfig.decode(raw)
         }
-        val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(known.mint.base58())
+        val tokenProgram = _state.value.tokenProgram ?: rpc.accountOwner(known.mint.base58())?.also { session.tokenProgram = it }
         val now = _state.value.chainNow()
         val id = known.roundAt(now)
 
@@ -171,6 +192,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         )
         val data = rpc.multipleAccounts(fixed + ticketKeys)
         val config = data[0]?.let(DrawConfig::decode) ?: known
+        if (data[0] != null && !data[0].contentEquals(configData)) {
+            configData = data[0]
+            session.configData = data[0]
+        }
         val current = data[1]?.let(DrawRound::decode)
         val previous = data[2]?.let(DrawRound::decode)
         _state.update { it.copy(config = config, programMissing = false, tokenProgram = tokenProgram, roundId = id, round = current) }
@@ -312,6 +337,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 val key = Base58.encodeToString(result.authResult.accounts.first().publicKey)
                 tokenAccount = null
                 ticketAddresses.clear()
+                session.wallet = key
                 _state.update { it.copy(wallet = key, identity = null, results = store.load(key)) }
                 runCatching { refresh(fullClock = true) }
             }
@@ -321,6 +347,14 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _state.update { it.copy(pending = it.pending - "connect") }
+    }
+
+    /** Forgets the wallet on this device; results stay stored per wallet for its return. */
+    fun disconnect() {
+        session.wallet = null
+        tokenAccount = null
+        ticketAddresses.clear()
+        _state.update { it.copy(wallet = null, identity = null, results = emptyList(), skr = null, lamports = null, seeker = null) }
     }
 
     private fun authorizationRefused(e: Exception) = "authorization request failed" in (e.message ?: "").lowercase()
@@ -410,7 +444,9 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             // The wallet only signs; the app broadcasts. Phantom's own send went
             // through its servers, which failed from this network, and it reported a
             // signature for a transaction that never reached the chain.
-            val result = wallet.transact(sender) {
+            val result = wallet.transact(sender) { auth ->
+                val account = Base58.encodeToString(auth.accounts.first().publicKey)
+                if (account != payer.base58()) throw AccountSwitched(account)
                 // Fetched once the wallet is open and authorized: a blockhash taken
                 // before the approval screen can expire while the person reads it.
                 blockhash = rpc.latestBlockhash().first
@@ -481,6 +517,13 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             // in its payload, and a bare "blockhash" match called a program error expired.
             "blockhash not found" in text.lowercase() -> "The transaction expired before it was sent. Try again."
             authorizationRefused(e) -> WALLET_REFUSED
+            e is AccountSwitched -> {
+                session.wallet = e.account
+                tokenAccount = null
+                ticketAddresses.clear()
+                _state.update { it.copy(wallet = e.account, identity = null, results = store.load(e.account)) }
+                "Your wallet is now on account ${e.account.take(4)}…${e.account.takeLast(4)}. The app switched to it — try again."
+            }
             // The wallet ended the session without an answer (closed, backgrounded,
             // or it gave up): nothing was signed and nothing was sent.
             e is java.util.concurrent.CancellationException ->

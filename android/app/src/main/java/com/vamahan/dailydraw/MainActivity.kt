@@ -40,6 +40,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -175,7 +177,7 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                         onCollect = { vm.collect(sender) }, onRevealed = vm::revealed)
                     return@Column
                 }
-                Header(s, onConnect = { vm.connect(sender) }, onBalance = { showActivity = true })
+                Header(s, onConnect = { vm.connect(sender) }, onBalance = { showActivity = true }, onDisconnect = vm::disconnect)
                 if (s.networkTrouble) {
                     Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
                 }
@@ -193,7 +195,7 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
 }
 
 @Composable
-private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit) {
+private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onDisconnect: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f)) {
             Text("Daily Draw", color = Gold, fontSize = 24.sp, fontWeight = FontWeight.Black)
@@ -207,13 +209,17 @@ private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit) {
                     .padding(horizontal = 12.dp, vertical = 8.dp),
             ) { Text("${formatSkr(s.skr ?: 0)} SKR", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
         }
+        var menu by remember { mutableStateOf(false) }
         Box(
             Modifier
                 .clip(RoundedCornerShape(20.dp))
                 .border(1.dp, Gold.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                .clickable(enabled = w == null && "connect" !in s.pending) { onConnect() }
+                .clickable(enabled = "connect" !in s.pending) { if (w == null) onConnect() else menu = true }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("Disconnect wallet") }, onClick = { menu = false; onDisconnect() })
+            }
             Text(
                 when {
                     w != null -> "${w.take(4)}…${w.takeLast(4)}"
@@ -234,11 +240,14 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (config == null) {
-            Text(
-                if (s.programMissing) "The draw isn't live on devnet right now. Checking again every few seconds…"
-                else "Connecting to Solana…",
-                color = Muted,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (!s.programMissing) CircularProgressIndicator(Modifier.size(22.dp), color = Gold, strokeWidth = 2.dp)
+                Text(
+                    if (s.programMissing) "The draw isn't live on devnet right now. Checking again every few seconds…"
+                    else "Loading today's draw from Solana…",
+                    color = Muted,
+                )
+            }
             return@Column
         }
         val secs = ((if (open) config.closeTs(s.roundId) else config.drawTs(s.roundId)) - now).coerceAtLeast(0)
