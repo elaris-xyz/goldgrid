@@ -1,29 +1,31 @@
-# Daily Draw — a free nightly draw for Seeker owners
+# Goldgrid — pick five, strike gold
 
-Built for **Clock In**, the Solana Mobile hackathon.
+A free number draw for Solana Seeker owners, built for **Clock In**, the Solana
+Mobile hackathon. Site: https://elaris-xyz.github.io/goldgrid/
 
-Every day, until 23:00 UTC, each Seeker gets a free ticket: pick 5 numbers from
-1 to 85. At midnight, Switchboard randomness draws the winning numbers, and the
-tickets with the most matches split a pot that sponsors fund in SKR. Entry is
-free, full stop: a paid entry would make this a lottery.
+A new round every five minutes: pick 5 numbers from 1 to 85, and when the timer
+ends Switchboard randomness draws the winning five. The tickets with the most
+matches split a pot that sponsors fund in SKR. Entry is free, full stop: a paid
+entry would make this a lottery.
 
-- **One Seeker, one ticket.** A ticket is tied to the Seeker Genesis Token, checked
-  on-chain against the SGT group (120,999 members on mainnet). Extra tickets are
-  earned by a streak — one per 7 consecutive days, up to 5 — never bought.
+- **One Seeker, one ticket.** On mainnet a ticket is tied to the Seeker Genesis
+  Token, checked on-chain against the SGT group (120,999 members). Extra tickets
+  come from a streak — one per 7 consecutive rounds played, up to 5 — never bought.
 - **Nobody can know the numbers in time to use them, or re-roll them.** Entries
   close first; the randomness is committed after that, and the reveal must be of
   that exact commitment (its seed slot is recorded), so whoever runs the draw
   cannot peek, re-commit and try again.
-- **Every night has a winner.** The best match wins, not only 5 of 5 (1 in
-  32.8 million). If nobody matches anything, the pot carries to the next night.
+- **Every round has a winner when anyone matches.** The best match wins, not only
+  5 of 5. If nobody matches anything, the pot rolls into the next round.
 - **Sponsors grow the pot as people enter.** Each ticket moves 1 SKR from the
-  sponsor budget into that night's pot.
-- **The draw needs no server.** Commit, reveal and scoring are permissionless;
-  whoever opens the app after the draw time can run them. If a committed draw is
-  never revealed (an oracle outage), it can be committed again after 300 slots.
-- **Entering costs only the transaction fee.** Claiming closes the ticket and
-  returns its rent; losing tickets are closed for their rent; a round closes once
-  its tickets are, and its rent goes back to whoever created it.
+  sponsor budget into that round's pot.
+- **Winners are paid automatically.** Paying out is permissionless and can only
+  pay the ticket's owner, so the crank pays every winner and returns every other
+  ticket's deposit right after the draw. A player signs once per round: the ticket.
+- **The draw needs no server of ours.** Commit, reveal, scoring and payout are
+  permissionless; a hosted crank runs them on GitHub Actions with a key that holds
+  no authority, and anyone can run another. If a committed draw is never revealed
+  (an oracle outage), it can be committed again after 300 slots.
 
 ## Layout
 
@@ -47,7 +49,7 @@ cd cli && npm install && node e2e-devnet.mjs   # one full night on devnet
 ```
 
 Devnet program: [`gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM`](https://explorer.solana.com/address/gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM?cluster=devnet)
-— demo mode: 10-minute rounds, entries open for 9. Only the program's upgrade
+— demo mode: 5-minute rounds, entries open for 4. Only the program's upgrade
 authority can initialize it; the admin can retime future rounds (`set_schedule`),
 and the program refuses any schedule that would reuse a past round's number.
 

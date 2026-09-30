@@ -91,7 +91,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private val wallet = MobileWalletAdapter(
         connectionIdentity = ConnectionIdentity(
             // Our own page: the wallet shows this site and its icon when the app connects.
-            identityUri = Uri.parse("https://elaris-xyz.github.io/daily-draw/"),
+            identityUri = Uri.parse("https://elaris-xyz.github.io/goldgrid/"),
             iconUri = Uri.parse("icon.png"),
             identityName = "Goldgrid",
         ),

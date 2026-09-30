@@ -1,5 +1,5 @@
 {
-  "name": "daily-draw-cli",
+  "name": "goldgrid-cli",
   "private": true,
   "type": "module",
   "description": "Devnet end-to-end test and draw crank for the daily_draw program",
