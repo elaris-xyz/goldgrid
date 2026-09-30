@@ -80,6 +80,25 @@ object DrawProgram {
     }
 
     /** Creates the owner's token account if it does not exist yet (idempotent). */
+    private val COMPUTE_BUDGET = SolanaPublicKey.from("ComputeBudget111111111111111111111111111111")
+
+    /**
+     * The transaction's own compute budget. A wallet that finds none estimates a
+     * priority fee itself, which is more RPC calls on its side; Phantom's calls to
+     * the public devnet were rate-limited long enough that a signature took 58 s
+     * and the blockhash expired.
+     */
+    fun computeBudget(units: Int = 200_000, microLamportsPerUnit: Long = 1_000): List<TransactionInstruction> = listOf(
+        TransactionInstruction(
+            COMPUTE_BUDGET, emptyList(),
+            byteArrayOf(2) + java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(units).array(),
+        ),
+        TransactionInstruction(
+            COMPUTE_BUDGET, emptyList(),
+            byteArrayOf(3) + java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(microLamportsPerUnit).array(),
+        ),
+    )
+
     fun createTokenAccountIdempotent(
         payer: SolanaPublicKey,
         ata: SolanaPublicKey,

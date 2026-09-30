@@ -450,7 +450,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 // Fetched once the wallet is open and authorized: a blockhash taken
                 // before the approval screen can expire while the person reads it.
                 blockhash = rpc.latestBlockhash().first
-                val message = MessageCompiler.compile(payer, instructions, blockhash)
+                val message = MessageCompiler.compile(payer, DrawProgram.computeBudget() + instructions, blockhash)
                 signTransactions(arrayOf(Transaction(message).serialize()))
             }
             val signed = when (result) {
