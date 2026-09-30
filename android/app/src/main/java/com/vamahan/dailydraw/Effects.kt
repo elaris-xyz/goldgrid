@@ -14,6 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -239,8 +240,13 @@ private fun Arrive(delayMillis: Int, content: @Composable () -> Unit) {
  * five, the name lights up, and the reasons to play and the two ways in follow.
  */
 @Composable
-fun WelcomeScreen(onConnect: () -> Unit, onLookAround: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF17181F), Ink, Color(0xFF08080B))))) {
+fun WelcomeScreen(connectedAs: String?, onConnect: () -> Unit, onContinue: () -> Unit) {
+    // A returning player sees the intro play out and goes on by itself; a tap skips.
+    if (connectedAs != null) LaunchedEffect(Unit) { kotlinx.coroutines.delay(4_200); onContinue() }
+    Box(
+        Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF17181F), Ink, Color(0xFF08080B))))
+            .then(if (connectedAs != null) Modifier.clickable(onClick = onContinue) else Modifier),
+    ) {
         TwinkleField()
         Box(Modifier.fillMaxSize().drawBehind {
             drawCircle(
@@ -267,11 +273,15 @@ fun WelcomeScreen(onConnect: () -> Unit, onLookAround: () -> Unit) {
             Arrive(2_950) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Button(
-                        onClick = onConnect,
+                        onClick = if (connectedAs != null) onContinue else onConnect,
                         colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
                         modifier = Modifier.widthIn(min = 280.dp, max = 420.dp).height(56.dp),
-                    ) { Text("Connect wallet", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
-                    TextButton(onClick = onLookAround) { Text("Look around first", color = Muted) }
+                    ) { Text(if (connectedAs != null) "Play" else "Connect wallet", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+                    if (connectedAs != null) {
+                        Text("Signed in as ${connectedAs.take(4)}…${connectedAs.takeLast(4)} · tap anywhere to skip", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp))
+                    } else {
+                        TextButton(onClick = onContinue) { Text("Look around first", color = Muted) }
+                    }
                 }
             }
         }

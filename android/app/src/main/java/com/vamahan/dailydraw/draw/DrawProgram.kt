@@ -167,7 +167,7 @@ enum class DrawError(val userMessage: String) {
     InvalidPicks("Pick 5 different numbers from 1 to 85."),
     NotASeeker("This draw needs the Seeker Genesis Token in the connected wallet."),
     WrongTicketIndex("Your ticket count changed. Try again."),
-    TicketLimit("No tickets left this round. A 7-day streak earns another."),
+    TicketLimit("No tickets left this round. Seven rounds in a row earn another."),
     WrongStatus("The round is not ready for that yet."),
     TooEarly("The draw time has not come yet."),
     BadRandomness("The draw's randomness did not check out."),

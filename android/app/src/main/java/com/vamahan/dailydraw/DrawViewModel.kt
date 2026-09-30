@@ -124,7 +124,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 config = saved, tokenProgram = session.tokenProgram, clockOffset = session.clockOffset,
                 roundId = saved?.roundAt(System.currentTimeMillis() / 1000 + session.clockOffset) ?: 0,
                 wallet = wallet, results = wallet?.let(store::load).orEmpty(),
-                showWelcome = wallet == null,
+                // The intro plays at every start; a connected player goes straight on after it.
+                showWelcome = true,
                 settings = NotifySettings(session.notifyWins, session.notifyResults, session.roundReminders, session.notifySound),
             )
         }
@@ -396,7 +397,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         val picks = s.selection.sorted()
         if (picks.size != DrawProgram.PICKS) return@launch
         val index = s.seeker?.ticketsAllowedIn(s.roundId)?.first ?: 0
-        val ok = send(sender, "enter", "You're in! Good luck in round #${s.roundId}.") {
+        val label = s.config?.labelOf(s.roundId) ?: "this round"
+        val ok = send(sender, "enter", "You're in round $label. Good luck!") {
             listOf(
                 DrawProgram.enter(
                     owner, SolanaPublicKey.from(identity.key), identity.sgtTokens?.let(SolanaPublicKey::from),

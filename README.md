@@ -45,11 +45,11 @@ Requires Rust, the Solana CLI (Agave 4.x) and Anchor 0.32.2.
 ```bash
 anchor build
 cargo test -p daily_draw --lib        # unit tests, incl. a real mainnet SGT fixture
-cd cli && npm install && node e2e-devnet.mjs   # one full night on devnet
+cd cli && npm install && node e2e-devnet.mjs   # one full round on devnet
 ```
 
 Devnet program: [`gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM`](https://explorer.solana.com/address/gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM?cluster=devnet)
-— demo mode: 5-minute rounds, entries open for 4. Only the program's upgrade
+— demo mode: 5-minute rounds, entries close 20 s before the draw. Only the program's upgrade
 authority can initialize it; the admin can retime future rounds (`set_schedule`),
 and the program refuses any schedule that would reuse a past round's number.
 
@@ -66,10 +66,46 @@ Actions around the clock with a key that pays fees and holds no authority.
 cd cli && node crank.mjs            # run a crank yourself, beside the hosted one
 ```
 
+## Playing a round
+
+A round lasts five minutes and has three phases, which the app shows as a bar
+under the timer:
+
+| Phase | When | What the player can do |
+|---|---|---|
+| **Open** | from the start until 50 s before the draw | pick five and enter (free) |
+| **Last call** | the 30 s before entries close | pick for the next round; a wallet approval would likely land too late, so the app does not offer Enter |
+| **Closed** | the last 20 s, until the draw | pick for the next round; the numbers are kept |
+
+Rounds are named by their UTC date and their number that day, `2026-09-30 · #50`.
+Right after the draw the crank pays winners and returns every other ticket's
+deposit; the app reveals the winning balls and a notification says what happened.
+
+## The app
+
+- **Sign-in screen** that plays at every start: the logo assembles and picks its
+  five, then a connected player goes straight to the game
+- **Mobile Wallet Adapter** with Phantom (devnet: Testnet Mode on). The wallet only
+  signs; the app sends through its own RPC and resends until confirmed. The wallet
+  is remembered until the player disconnects
+- **One screen to play**: the round card (phase, timer, pot and where it comes
+  from), the 5-of-85 grid (tap, quick pick, or shake), an action button that always
+  says what it is waiting for, and the player's tickets with results and a link
+  to each draw on Solana Explorer
+- **Activity** (tap the SKR balance): every ticket with its date, result and prize
+- **Notifications** with the result picture and the Goldgrid chime; in Settings,
+  wins, results and new-round reminders (off, hourly, every round) are separate
+  switches, with sound on or off
+- Everything the app needs to open is kept on the device, so it renders at once
+  and refreshes in the background
+
 ## Status
 
-- [x] Program: enter, commit/reveal with Switchboard, scoring, split, rollover, claim, rent return
-- [x] Devnet end-to-end test, including the re-roll attack and rent returns
-- [x] Android app: wallet, round countdown on chain time, pick grid, shake to quick pick,
-      entry (demo and SGT), results, claim, rent return
-- [ ] In-app draw crank, widget and notifications
+- [x] Program: enter, commit/reveal with Switchboard, scoring, split, rollover,
+      permissionless payout, rent return, schedule changes that only move forward
+- [x] Devnet end-to-end test (re-roll attack, stranger payouts, rent returns)
+- [x] Hosted crank on GitHub Actions with a fee-only key
+- [x] Android app on a real device with Phantom: entry, results, automatic payout,
+      notifications, settings
+- [x] Site: https://elaris-xyz.github.io/goldgrid/
+- [ ] Mainnet: SGT gating live, a sponsored SKR pot, a signed release APK

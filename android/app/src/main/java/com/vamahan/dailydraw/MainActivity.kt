@@ -15,10 +15,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -73,6 +78,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -96,7 +104,7 @@ internal val CardHigh = Color(0xFF242732)
 internal val Muted = Color(0xFF8A8F9C)
 internal val Win = Color(0xFF4ADE80)
 private val Danger = Color(0xFFF87171)
-private const val CLOSING_SECS = 30
+private val Amber = Color(0xFFFFA940)
 /** Past this the screen stops stretching: a tablet shows a phone-width column. */
 private val MAX_CONTENT_WIDTH = 640.dp
 private const val RECENT_ON_MAIN = 3
@@ -157,13 +165,26 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
         ) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
     val config = s.config
-    val open = config != null && now < config.closeTs(s.roundId)
+    val phase = config?.phaseOf(s.roundId, now) ?: Phase.Open
+    val open = config != null && phase != Phase.Closed
     val left = if (s.wallet == null) 1 else s.ticketsLeft()
-    val picking = open && left > 0
-    if (picking) ShakeToPick { vm.quickPick() }
+    // The grid stays while there is anything to pick for: this round, or the next
+    // one once this closes. It goes only when the player is in and has no ticket left.
+    val showGrid = config != null && (s.wallet == null || left > 0 || phase != Phase.Open)
+    if (showGrid) ShakeToPick { vm.quickPick() }
+
+    // A new round opening with five numbers already picked: tell the player's hand.
+    val haptics = LocalHapticFeedback.current
+    LaunchedEffect(s.roundId) {
+        if (s.wallet != null && s.selection.size == DrawProgram.PICKS) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
 
     if (s.showWelcome) {
-        WelcomeScreen(onConnect = { vm.welcomed(); vm.connect(sender) }, onLookAround = vm::welcomed)
+        WelcomeScreen(
+            connectedAs = s.wallet,
+            onConnect = { vm.welcomed(); vm.connect(sender) },
+            onContinue = vm::welcomed,
+        )
         return
     }
     var showActivity by rememberSaveable { mutableStateOf(false) }
@@ -175,7 +196,7 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
         snackbarHost = { SnackbarHost(snackbar) },
         // The action stays on screen: on a tablet the grid alone is taller than the view.
         bottomBar = {
-            if (!showActivity && !showSettings && picking) ActionBar(s, now) { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) }
+            if (!showActivity && !showSettings && config != null) ActionBar(s, now, phase, left) { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
@@ -200,10 +221,10 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                 if (s.networkTrouble) {
                     Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
                 }
-                NowCard(s, now, open, left)
+                NowCard(s, now, phase, left)
                 s.error?.let { ErrorCard(it, onDismiss = vm::dismissError) }
                 if (s.lowSol) LowSolCard(busy = "airdrop" in s.pending, onAirdrop = vm::airdrop)
-                if (picking) PickArea(s, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection)
+                if (showGrid) PickArea(s, phase, onToggle = vm::toggle, onQuickPick = vm::quickPick, onClear = vm::clearSelection)
                 Results(s, now, onClaim = { vm.claim(sender, it) }, onCollect = { vm.collect(sender) },
                     onRevealed = vm::revealed, onSeeAll = { showActivity = true })
                 HowItWorks()
@@ -260,32 +281,47 @@ private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onD
 }
 
 @Composable
-private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
+private fun NowCard(s: UiState, now: Long, phase: Phase, left: Int) {
     val config = s.config
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (config == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (!s.programMissing) CircularProgressIndicator(Modifier.size(22.dp), color = Gold, strokeWidth = 2.dp)
                 Text(
                     if (s.programMissing) "The draw isn't live on devnet right now. Checking again every few seconds…"
-                    else "Loading today's draw from Solana…",
+                    else "Loading the current round from Solana…",
                     color = Muted,
                 )
             }
             return@Column
         }
-        val phaseEnd = if (open) config.closeTs(s.roundId) else config.drawTs(s.roundId)
-        val phaseStart = if (open) config.drawTs(s.roundId) - config.roundSecs else config.closeTs(s.roundId)
-        val secs = (phaseEnd - now).coerceAtLeast(0)
-        Text("Round ${config.labelOf(s.roundId)} · a new round every ${config.roundSecs / 60} min", color = Muted, fontSize = 12.sp)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(if (open) "Entries close in" else "Numbers drawn in", color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
-            Text(clock(secs), color = Gold, fontSize = 34.sp, fontWeight = FontWeight.Black)
-            CountdownRing(secs.toFloat() / (phaseEnd - phaseStart).coerceAtLeast(1))
+        val close = config.closeTs(s.roundId)
+        val draw = config.drawTs(s.roundId)
+        val (chip, chipColor) = when (phase) {
+            Phase.Open -> "OPEN" to Win
+            Phase.LastCall -> "LAST CALL" to Amber
+            Phase.Closed -> "CLOSED" to Muted
         }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.clip(RoundedCornerShape(6.dp)).background(chipColor.copy(alpha = 0.16f)).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                Text(chip, color = chipColor, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+            }
+            Text("Round ${config.labelOf(s.roundId)}", color = Muted, fontSize = 13.sp)
+        }
+        val (headline, target, color) = when (phase) {
+            Phase.Open -> Triple("Entries close in", close, Gold)
+            Phase.LastCall -> Triple("Last call — closes in", close, Amber)
+            Phase.Closed -> Triple("Winning numbers in", draw, Color.White)
+        }
+        val secs = (target - now).coerceAtLeast(0)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(headline, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
+            Text(clock(secs), color = color, fontSize = 34.sp, fontWeight = FontWeight.Black)
+        }
+        PhaseBar(config.roundSecs, draw - config.roundSecs, close, draw, now)
         val pot = s.round?.pot ?: config.carry
         val tickets = s.round?.tickets ?: 0
         val rolled = (pot - config.perTicketBonus * tickets).coerceAtLeast(0)
@@ -298,29 +334,59 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
                 ". The best match takes the whole pot; ties split it.",
             color = Muted, fontSize = 13.sp,
         )
-        val mine = s.resultsIn(s.roundId)
+        val entered = s.resultsIn(s.roundId).isNotEmpty()
+        val nextIn = clock((draw - now).coerceAtLeast(0))
         Text(
             when {
-                !open -> "Entries are closed. The winning numbers are drawn on-chain when the timer ends."
+                phase == Phase.Closed && entered -> "You're in this round. The numbers are drawn on-chain when the timer ends; the next round opens right after."
+                phase == Phase.Closed -> "This round is closed. The next one opens in $nextIn — pick now and your numbers are kept."
+                phase == Phase.LastCall && !entered -> "Too close to the deadline for a wallet approval to land in time. Pick now — the next round opens in $nextIn and your numbers are kept."
                 s.wallet == null -> "Pick 5 numbers, then connect a wallet to enter. Entry is free."
-                left > 0 && mine.isEmpty() -> "Pick 5 numbers below. Entry is free — the sponsor adds ${formatSkr(config.perTicketBonus)} SKR to the pot per ticket."
-                left > 0 -> "You're in. Your streak earned you another ticket — pick again below."
-                else -> "You're in! Your ticket is waiting below — the result lands there when the draw ends."
+                entered && left > 0 -> "You're in. Your streak earned you another ticket — pick again below."
+                entered -> "You're in! Your ticket is waiting below — the result lands there when the draw ends."
+                else -> "Pick 5 numbers below. Entry is free — the sponsor adds ${formatSkr(config.perTicketBonus)} SKR to the pot per ticket."
             },
             color = Muted, fontSize = 13.sp,
         )
     }
 }
 
+/**
+ * The round as a line: entries open (gold), last call (amber), closed until the
+ * draw (grey), with a marker at now. It answers "how long do I have" at a glance.
+ */
+@Composable
+private fun PhaseBar(roundSecs: Long, start: Long, close: Long, draw: Long, now: Long) {
+    val total = roundSecs.toFloat().coerceAtLeast(1f)
+    val openPart = ((close - LAST_CALL_SECS - start) / total).coerceIn(0f, 1f)
+    val lastPart = (LAST_CALL_SECS / total).coerceIn(0f, 1f)
+    val at = ((now - start) / total).coerceIn(0f, 1f)
+    Canvas(Modifier.fillMaxWidth().height(10.dp)) {
+        val h = 6.dp.toPx()
+        val y = (size.height - h) / 2
+        val w = size.width
+        drawRoundRect(Gold.copy(alpha = 0.85f), Offset(0f, y), Size(w * openPart, h), CornerRadius(h / 2))
+        drawRect(Amber.copy(alpha = 0.85f), Offset(w * openPart, y), Size(w * lastPart, h))
+        drawRoundRect(CardHigh, Offset(w * (openPart + lastPart), y), Size(w * (1f - openPart - lastPart), h), CornerRadius(h / 2))
+        drawCircle(Color.White, 5.dp.toPx(), Offset(w * at, size.height / 2))
+        drawCircle(Ink, 2.dp.toPx(), Offset(w * at, size.height / 2))
+    }
+}
+
 @Composable
 private fun PickArea(
     s: UiState,
+    phase: Phase,
     onToggle: (Int) -> Unit,
     onQuickPick: () -> Unit,
     onClear: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Your numbers  ${s.selection.size}/${DrawProgram.PICKS} · or shake the phone", color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+            (if (phase == Phase.Open) "Your numbers" else "Your numbers for the next round") +
+                "  ${s.selection.size}/${DrawProgram.PICKS} · or shake the phone",
+            color = Color.White, fontWeight = FontWeight.Bold,
+        )
         NumberGrid(s.selection, onToggle)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(onClick = onQuickPick, modifier = Modifier.weight(1f)) { Text("Quick pick") }
@@ -329,37 +395,47 @@ private fun PickArea(
     }
 }
 
-/** The one thing to do next, pinned to the bottom of the screen. */
+/**
+ * The one thing to do next, pinned to the bottom of the screen. When it cannot be
+ * pressed it says why and until when; when it can, it glows.
+ */
 @Composable
-private fun ActionBar(s: UiState, now: Long, onEnter: () -> Unit) {
+private fun ActionBar(s: UiState, now: Long, phase: Phase, left: Int, onEnter: () -> Unit) {
+    val config = s.config ?: return
     val entering = "enter" in s.pending
-    val needsSgt = s.wallet != null && s.identity == null && s.config?.requireSgt == true
+    val needsSgt = s.wallet != null && s.identity == null && config.requireSgt
     val ready = s.selection.size == DrawProgram.PICKS
-    // A wallet approval takes 10-60 s; entering in the last seconds only ends
-    // in "entries closed" after the player has already approved.
-    val closing = s.config?.let { it.closeTs(s.roundId) - now < CLOSING_SECS } ?: false
+    val nextIn = clock((config.drawTs(s.roundId) - now).coerceAtLeast(0))
+    val entered = s.resultsIn(s.roundId).isNotEmpty()
+    val (label, enabled) = when {
+        s.wallet == null -> "Connect wallet to play" to ("connect" !in s.pending)
+        entering -> "Confirm in your wallet, then wait a moment…" to false
+        needsSgt -> "Needs a Seeker Genesis Token" to false
+        phase != Phase.Open && ready -> "Next round opens in $nextIn · your numbers are kept" to false
+        phase != Phase.Open -> "Next round opens in $nextIn" to false
+        left == 0 -> "You're in · draw in ${clock((config.drawTs(s.roundId) - now).coerceAtLeast(0))}" to false
+        !ready -> "Pick ${DrawProgram.PICKS - s.selection.size} more number${if (DrawProgram.PICKS - s.selection.size == 1) "" else "s"}" to false
+        entered -> "Enter another ticket for #${config.dayNumberOf(s.roundId)} — free" to true
+        else -> "Enter round #${config.dayNumberOf(s.roundId)} — free" to true
+    }
+    val glow = rememberInfiniteTransition(label = "cta")
+    val pulse by glow.animateFloat(1f, 1.03f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "pulse")
     Box(Modifier.fillMaxWidth().background(Ink).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
         Button(
             onClick = onEnter,
-            enabled = !entering && !closing && "connect" !in s.pending && !needsSgt && (s.wallet == null || ready),
-            colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Ink),
-            modifier = Modifier.widthIn(max = MAX_CONTENT_WIDTH).fillMaxWidth().height(56.dp),
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Gold, contentColor = Ink,
+                disabledContainerColor = CardHigh, disabledContentColor = Color.White.copy(alpha = 0.75f),
+            ),
+            modifier = Modifier.widthIn(max = MAX_CONTENT_WIDTH).fillMaxWidth().height(56.dp)
+                .scale(if (enabled && s.wallet != null) pulse else 1f),
         ) {
             if (entering) {
                 CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
                 Spacer(Modifier.width(10.dp))
             }
-            Text(
-                when {
-                    entering -> "Confirm in your wallet, then wait a moment…"
-                    closing -> "Entries closing — next round in ${clock(((s.config?.drawTs(s.roundId) ?: now) - now).coerceAtLeast(0))}"
-                    s.wallet == null -> "Connect wallet to enter"
-                    needsSgt -> "Needs a Seeker Genesis Token"
-                    !ready -> "Pick ${DrawProgram.PICKS - s.selection.size} more"
-                    else -> "Enter round #${s.roundId} — free"
-                },
-                fontWeight = FontWeight.Bold,
-            )
+            Text(label, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
     }
 }
@@ -451,7 +527,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(s.config?.labelOf(r.round) ?: "Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(s.config.labelFor(r.round, r.drawTs), color = Color.White, fontWeight = FontWeight.Bold)
                 if (r.drawTs > 0) Text(when_(r.drawTs), color = Muted, fontSize = 12.sp)
             }
             val drawIn = (if (r.drawTs > 0) r.drawTs else s.config?.drawTs(r.round) ?: now) - now
@@ -701,7 +777,7 @@ private fun HowItWorks() {
         Text("How it works", color = Color.White, fontWeight = FontWeight.Bold)
         listOf(
             "Pick 5 numbers from 1 to 85. One free ticket per round — per Seeker Genesis Token on mainnet.",
-            "Play every day: each 7-day streak adds a ticket, up to 5.",
+            "Play round after round: every 7 rounds in a row adds a ticket, up to 5.",
             "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
             "The best match wins the pot and ties split it; the prize goes straight to the winner's wallet. No match? The pot rolls over.",
             "This demo runs on devnet with a round every few minutes; prizes are test SKR.",

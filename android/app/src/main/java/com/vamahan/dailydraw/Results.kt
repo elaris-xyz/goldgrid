@@ -20,6 +20,40 @@ fun roundLabel(startTs: Long, roundSecs: Long): String {
 
 fun com.vamahan.dailydraw.draw.DrawConfig.labelOf(round: Long) = roundLabel(genesisTs + round * roundSecs, roundSecs)
 
+/** The round's number within its day, the short form for buttons: #50. */
+fun com.vamahan.dailydraw.draw.DrawConfig.dayNumberOf(round: Long): Long {
+    val start = genesisTs + round * roundSecs
+    return (start - Math.floorDiv(start, 86_400L) * 86_400L) / roundSecs + 1
+}
+
+/**
+ * The label of a round that may predate the current schedule: its id then maps
+ * to a different time under today's config, so it is named by its own draw
+ * time instead ("2026-09-29 · 21:40 draw").
+ */
+fun com.vamahan.dailydraw.draw.DrawConfig?.labelFor(round: Long, drawTs: Long): String = when {
+    this != null && (drawTs == 0L || drawTs(round) == drawTs) -> labelOf(round)
+    drawTs > 0 -> java.time.Instant.ofEpochSecond(drawTs).atZone(java.time.ZoneOffset.UTC).let {
+        "${it.toLocalDate()} · ${"%02d:%02d".format(it.hour, it.minute)} draw"
+    }
+    else -> "Round $round"
+}
+
+/**
+ * Where a round stands for someone about to enter. Last call is the stretch
+ * before entries close in which a wallet approval (10-60 s) would likely land
+ * too late, so the app stops offering the button there and says why.
+ */
+enum class Phase { Open, LastCall, Closed }
+
+const val LAST_CALL_SECS = 30L
+
+fun com.vamahan.dailydraw.draw.DrawConfig.phaseOf(round: Long, now: Long): Phase = when {
+    now >= closeTs(round) -> Phase.Closed
+    now >= closeTs(round) - LAST_CALL_SECS -> Phase.LastCall
+    else -> Phase.Open
+}
+
 /** Where one of the player's tickets stands, in the words the screen uses. */
 enum class Outcome { Waiting, Drawing, NoMatch, Matched, Won, Claimed }
 

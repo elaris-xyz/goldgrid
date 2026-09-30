@@ -72,7 +72,7 @@ object ResultAlarm {
             return
         }
         val config = Session(context).configData?.let { runCatching { DrawConfig.decode(it) }.getOrNull() }
-        val label = config?.labelOf(round) ?: "#$round"
+        val label = config.labelFor(round, r.drawTs)
         val (title, text) = when (result.outcome) {
             Outcome.Won -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
                 "Round $label: ${result.matches} of your numbers came up and nobody did better. Tap to collect it."
