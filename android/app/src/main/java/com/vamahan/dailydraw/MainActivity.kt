@@ -88,6 +88,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -247,8 +248,8 @@ private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onD
             modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(Color.White).padding(4.dp),
         )
         Column(Modifier.weight(1f)) {
-            Text("Goldgrid", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
-            Text("Pick five. Strike gold. · devnet demo", color = Muted, fontSize = 12.sp)
+            Text("Goldgrid", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("Pick five. Strike gold. · devnet", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         val w = s.wallet
         if (w != null) {
@@ -505,7 +506,7 @@ private fun Results(
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(if (busy) "Returning deposits…" else "Get back the SOL deposit of $returnable finished ticket(s)")
+                Text(if (busy) "Returning deposits…" else "Get back the SOL deposit of $returnable finished ${plural(returnable, "ticket")} now")
             }
         }
         // Anything waiting for the player (a prize to claim) is never hidden behind "see all".
@@ -571,7 +572,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
                     CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                 }
-                Text(if (pending) "Claiming — confirm in your wallet…" else "Claim ${formatSkr(r.prize)} SKR", fontWeight = FontWeight.Bold)
+                Text(if (pending) "Collecting — confirm in your wallet…" else "Collect ${formatSkr(r.prize)} SKR now", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -768,8 +769,8 @@ private fun ActivityPage(
     ) {
         Text("${formatSkr(s.skr ?: 0)} SKR in your wallet", color = Gold, fontSize = 20.sp, fontWeight = FontWeight.Black)
         Text(
-            "Won ${formatSkr(won.sumOf { it.prize })} SKR in ${won.size} of ${s.results.size} tickets · " +
-                "${won.count { it.outcome == Outcome.Claimed }} claimed",
+            "Won ${formatSkr(won.sumOf { it.prize })} SKR with ${won.size} of ${s.results.size} ${plural(s.results.size, "ticket")} · " +
+                "${won.count { it.outcome == Outcome.Claimed }} paid to your wallet",
             color = Muted, fontSize = 13.sp,
         )
     }
@@ -788,12 +789,15 @@ private fun HowItWorks() {
             "Play round after round: every 7 rounds in a row adds a ticket, up to 5.",
             "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
             "The best match wins the pot and ties split it; the prize goes straight to the winner's wallet. No match? The pot rolls over.",
-            "This demo runs on devnet with a round every few minutes; prizes are test SKR.",
+            "Entry is free. Each ticket holds a small SOL deposit that comes back to you right after the draw.",
+            "This demo runs on Solana devnet with a round every five minutes; prizes are test SKR.",
         ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
     }
 }
 
 private fun clock(secs: Long) = "%02d:%02d".format(secs / 60, secs % 60)
+
+private fun plural(n: Int, word: String) = if (n == 1) word else "${word}s"
 
 /** A draw time (chain seconds) in the device's own date format. */
 private fun when_(unixSecs: Long): String =

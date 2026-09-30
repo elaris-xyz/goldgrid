@@ -480,7 +480,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         val owner = s.wallet?.let(SolanaPublicKey::from) ?: return@launch
         val batch = s.results.filter { it.canReturnDeposit }.take(MAX_CLOSES_PER_TX)
         if (batch.isEmpty()) return@launch
-        val ok = send(sender, "collect", "Deposit of ${batch.size} ticket(s) returned to your wallet.") {
+        val ok = send(sender, "collect", if (batch.size == 1) "The ticket's deposit is back in your wallet." else "The deposits of ${batch.size} tickets are back in your wallet.") {
             batch.map { DrawProgram.closeTicket(owner, it.round, SolanaPublicKey.from(it.ticket!!)) }
         }
         if (ok) batch.forEach { settleLocally(it.key, it.outcome) }
@@ -558,7 +558,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(pending = it.pending - pendingKey, message = done) }
                 return true
             }
-            _state.update { it.copy(error = "The approval took too long and the transaction expired. Please try again.") }
+            _state.update { it.copy(error = "The approval took too long and the transaction expired. Nothing was sent — try again.") }
         } catch (e: Exception) {
             Log.w(TAG, "send failed", e)
             walletRequest = null

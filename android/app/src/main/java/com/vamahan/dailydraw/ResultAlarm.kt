@@ -75,7 +75,7 @@ object ResultAlarm {
         val label = config.labelFor(round, r.drawTs)
         val (title, text) = when (result.outcome) {
             Outcome.Won -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
-                "Round $label: ${result.matches} of your numbers came up and nobody did better. Tap to collect it."
+                "Round $label: ${result.matches} of your numbers came up and nobody did better. It's on its way to your wallet."
             Outcome.Claimed -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
                 "Round $label: ${result.matches} of your numbers came up and nobody did better. It's already in your wallet."
             Outcome.Matched -> "So close — ${result.matches} matched" to

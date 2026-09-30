@@ -27,6 +27,31 @@ entry would make this a lottery.
   no authority, and anyone can run another. If a committed draw is never revealed
   (an oracle outage), it can be committed again after 300 slots.
 
+## Try it in five minutes
+
+The app runs on **Solana devnet**; nothing here costs real money.
+
+1. **Install the APK** from the [latest release](https://github.com/elaris-xyz/goldgrid/releases/latest)
+   on an Android phone (a Seeker, or any Android 8+ phone).
+2. **Set up Phantom for devnet:** in Phantom, *Settings → Developer Settings →
+   Testnet Mode* on, and pick *Solana Devnet*. (Without it Phantom refuses the
+   connection with "Incorrect mode".)
+3. **Open Goldgrid and connect.** An empty devnet wallet gets a *Get free devnet
+   SOL* button; if the public faucet is busy, use https://faucet.solana.com.
+   Entry is free — each ticket only holds a small SOL deposit that comes back
+   after the draw.
+4. **Pick five and enter.** Tap five numbers (or shake the phone for a quick pick)
+   and *Enter round #… — free*, then approve in Phantom. Rounds are five minutes;
+   entries close 20 s before the draw, and the last 30 s before that are
+   *last call* (too late for a wallet approval to land), which the app shows.
+5. **Wait for the draw.** The winning numbers turn over in the app, a
+   notification arrives with the result, and a prize is paid into your wallet by
+   itself — there is nothing to claim. *Verify this draw on Solana Explorer* shows
+   the Switchboard commit and reveal behind every result.
+
+With one player every ticket that matches anything wins the round's pot, so a
+solo judge wins often; with more players it becomes a race for the best match.
+
 ## Layout
 
 | Path | What |
@@ -35,6 +60,8 @@ entry would make this a lottery.
 | `cli/` | Devnet end-to-end test (`e2e-devnet.mjs`), the draw crank (`crank.mjs`), admin scripts, shared client (`lib.mjs`) |
 | `android/` | The app: Kotlin + Compose, Mobile Wallet Adapter |
 | `.github/workflows/crank.yml` | Runs the draw crank on GitHub Actions |
+| `docs/` | The site, served by GitHub Pages |
+| `brand/` | The Goldgrid icon |
 | `spikes/` | The Switchboard-on-devnet spike that validated the approach |
 | `scripts/` | Toolchain and build helpers (WSL) |
 
@@ -108,4 +135,5 @@ deposit; the app reveals the winning balls and a notification says what happened
 - [x] Android app on a real device with Phantom: entry, results, automatic payout,
       notifications, settings
 - [x] Site: https://elaris-xyz.github.io/goldgrid/
-- [ ] Mainnet: SGT gating live, a sponsored SKR pot, a signed release APK
+- [x] Signed release APK (1.0.0) for judges
+- [ ] Mainnet: SGT gating live, a sponsored SKR pot

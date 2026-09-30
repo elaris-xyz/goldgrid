@@ -178,7 +178,7 @@ enum class DrawError(val userMessage: String) {
     AlreadyClaimed("Already claimed."),
     RandomnessExpired("The draw's randomness changed after commit and was refused."),
     RevealPending("The committed draw can still be revealed."),
-    UnclaimedPrize("Claim your prize first; claiming also returns the ticket's SOL."),
+    UnclaimedPrize("This ticket won — its prize is paid to the owner's wallet before it can close."),
     TicketsOpen("Some tickets of this round are still open."),
     NotCreator("Only the round's creator gets its rent back."),
     NotUpgradeAuthority("Only the program's upgrade authority can initialize."),

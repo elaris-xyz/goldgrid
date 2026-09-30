@@ -14,16 +14,32 @@ android {
         applicationId = "com.vamahan.dailydraw"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
         // A keyed RPC (Helius) lives in local.properties as rpc.url, never in the repo;
         // without one the app falls back to the public devnet endpoint.
         buildConfigField("String", "RPC_URL", "\"${localRpcUrl()}\"")
     }
 
+    // The release key and its passwords live in local.properties and keys/, both
+    // git-ignored: a build without them is simply unsigned, never signed with a
+    // key someone could have read from the repo.
+    val release = localProps()
+    signingConfigs {
+        if (release.getProperty("release.storeFile") != null) {
+            create("release") {
+                storeFile = file(release.getProperty("release.storeFile"))
+                storePassword = release.getProperty("release.storePassword")
+                keyAlias = release.getProperty("release.keyAlias")
+                keyPassword = release.getProperty("release.keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {
@@ -55,8 +71,10 @@ dependencies {
     testImplementation(libs.junit)
 }
 
-fun localRpcUrl(): String {
+fun localProps(): Properties {
     val props = Properties()
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { props.load(it) }
-    return props.getProperty("rpc.url") ?: "https://api.devnet.solana.com"
+    return props
 }
+
+fun localRpcUrl(): String = localProps().getProperty("rpc.url") ?: "https://api.devnet.solana.com"
