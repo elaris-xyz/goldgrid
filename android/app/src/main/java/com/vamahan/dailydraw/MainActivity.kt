@@ -123,6 +123,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        vm.onForeground()
+    }
+
     override fun onStart() {
         super.onStart()
         vm.start()
@@ -283,10 +288,8 @@ private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onD
 @Composable
 private fun NowCard(s: UiState, now: Long, phase: Phase, left: Int) {
     val config = s.config
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card)) {
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (config == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (!s.programMissing) CircularProgressIndicator(Modifier.size(22.dp), color = Gold, strokeWidth = 2.dp)
@@ -321,7 +324,6 @@ private fun NowCard(s: UiState, now: Long, phase: Phase, left: Int) {
             Text(headline, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
             Text(clock(secs), color = color, fontSize = 34.sp, fontWeight = FontWeight.Black)
         }
-        PhaseBar(config.roundSecs, draw - config.roundSecs, close, draw, now)
         val pot = s.round?.pot ?: config.carry
         val tickets = s.round?.tickets ?: 0
         val rolled = (pot - config.perTicketBonus * tickets).coerceAtLeast(0)
@@ -349,27 +351,33 @@ private fun NowCard(s: UiState, now: Long, phase: Phase, left: Int) {
             color = Muted, fontSize = 13.sp,
         )
     }
+    if (config != null) PhaseStrip(config.roundSecs, config.drawTs(s.roundId) - config.roundSecs, config.closeTs(s.roundId), now)
+    }
 }
 
 /**
- * The round as a line: entries open (gold), last call (amber), closed until the
- * draw (grey), with a marker at now. It answers "how long do I have" at a glance.
+ * The round as a strip along the card's bottom edge: dim gold for the time to
+ * enter, amber for last call, grey until the draw, and the part already gone
+ * filled bright. How long is left reads at a glance without a second timer.
  */
 @Composable
-private fun PhaseBar(roundSecs: Long, start: Long, close: Long, draw: Long, now: Long) {
+private fun PhaseStrip(roundSecs: Long, start: Long, close: Long, now: Long) {
     val total = roundSecs.toFloat().coerceAtLeast(1f)
-    val openPart = ((close - LAST_CALL_SECS - start) / total).coerceIn(0f, 1f)
-    val lastPart = (LAST_CALL_SECS / total).coerceIn(0f, 1f)
+    val openEnd = ((close - LAST_CALL_SECS - start) / total).coerceIn(0f, 1f)
+    val lastEnd = ((close - start) / total).coerceIn(0f, 1f)
     val at = ((now - start) / total).coerceIn(0f, 1f)
-    Canvas(Modifier.fillMaxWidth().height(10.dp)) {
-        val h = 6.dp.toPx()
-        val y = (size.height - h) / 2
+    Canvas(Modifier.fillMaxWidth().height(5.dp)) {
         val w = size.width
-        drawRoundRect(Gold.copy(alpha = 0.85f), Offset(0f, y), Size(w * openPart, h), CornerRadius(h / 2))
-        drawRect(Amber.copy(alpha = 0.85f), Offset(w * openPart, y), Size(w * lastPart, h))
-        drawRoundRect(CardHigh, Offset(w * (openPart + lastPart), y), Size(w * (1f - openPart - lastPart), h), CornerRadius(h / 2))
-        drawCircle(Color.White, 5.dp.toPx(), Offset(w * at, size.height / 2))
-        drawCircle(Ink, 2.dp.toPx(), Offset(w * at, size.height / 2))
+        val h = size.height
+        fun band(from: Float, to: Float, color: Color) {
+            if (to > from) drawRect(color, Offset(w * from, 0f), Size(w * (to - from), h))
+        }
+        band(0f, openEnd, Gold.copy(alpha = 0.22f))
+        band(openEnd, lastEnd, Amber.copy(alpha = 0.28f))
+        band(lastEnd, 1f, CardHigh)
+        band(0f, minOf(at, openEnd), Gold)
+        band(openEnd, minOf(at, lastEnd), Amber)
+        band(lastEnd, at, Color.White.copy(alpha = 0.55f))
     }
 }
 

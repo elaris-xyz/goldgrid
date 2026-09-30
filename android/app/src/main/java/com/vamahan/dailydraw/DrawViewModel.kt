@@ -39,6 +39,9 @@ const val LOW_SOL_LAMPORTS = 5_000_000L
 
 private class AccountSwitched(val account: String) : Exception("wallet switched to $account")
 
+/** The player came back from the wallet without an answer: they cancelled or backed out. */
+private class WalletDismissed : java.util.concurrent.CancellationException("the player left the wallet without answering")
+
 data class NotifySettings(
     val wins: Boolean = true,
     val results: Boolean = true,
@@ -111,6 +114,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     /** PDAs by (round, index) for the current identity, and the player's token account. */
     private val ticketAddresses = HashMap<Pair<Long, Int>, String>()
     private var tokenAccount: String? = null
+    /** The request waiting on the wallet, if any: cancelled when the player comes back without an answer. */
+    private var walletRequest: Job? = null
     private var configData: ByteArray? = null
 
     init {
@@ -162,6 +167,20 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * The app is in front again. If a wallet request is still open, the player
+     * came back without approving (a cancel, a back press, or the wallet gave up);
+     * a real answer arrives within a moment of returning, so after a short grace
+     * the request is dropped and the button comes back.
+     */
+    fun onForeground() {
+        val waiting = walletRequest ?: return
+        viewModelScope.launch {
+            delay(WALLET_GRACE_MS)
+            if (walletRequest === waiting && waiting.isActive) waiting.cancel(WalletDismissed())
+        }
+    }
+
+    /**
      * One poll in (usually) one RPC call: the config, this round and the last,
      * the seeker, the prize token account and the player's recent ticket PDAs all
      * go into a single getMultipleAccounts. Seven calls every four seconds ran
@@ -205,7 +224,12 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             identityKey?.let { DrawProgram.seeker(it).base58() } ?: configKey,
             tokenAccount ?: configKey,
         )
-        val data = rpc.multipleAccounts(fixed + ticketKeys)
+        // Remembered tickets older than the watched rounds: still there, or paid and closed?
+        // Without this a prize paid by the crank weeks ago kept a Claim button forever.
+        val older = _state.value.results.filter { it.ticket != null && it.round < id - WATCHED_ROUNDS + 1 }.take(MAX_OLD_CHECKS)
+        val all = rpc.multipleAccounts(fixed + ticketKeys + older.map { it.ticket!! })
+        val data = all.take(fixed.size + ticketKeys.size)
+        val goneOlder = older.zip(all.drop(fixed.size + ticketKeys.size)).filter { it.second == null }.map { it.first.key }.toSet()
         val config = data[0]?.let(DrawConfig::decode) ?: known
         if (data[0] != null && !data[0].contentEquals(configData)) {
             configData = data[0]
@@ -237,7 +261,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             .forEach { (raw, rid) -> raw?.let { rounds[rid] = DrawRound.decode(it) } }
 
         val onChain = live.map { (slot, t) -> MyResult.of(t, slot.second, rounds[t.round], now, config.drawTs(t.round)) }
-        merge(owner, onChain, watchedFrom, rounds, seeker = seeker, skr = skr)
+        merge(owner, onChain, watchedFrom, rounds, goneOlder, seeker = seeker, skr = skr)
         if (fullClock || _state.value.lamports == null || (_state.value.lamports ?: 0) < LOW_SOL_LAMPORTS) {
             val lamports = rpc.lamports(owner)
             _state.update { it.copy(lamports = lamports) }
@@ -255,6 +279,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         onChain: List<MyResult>,
         watchedFrom: Long,
         rounds: Map<Long, DrawRound>,
+        goneOlder: Set<String>,
         seeker: SeekerState?,
         skr: Long?,
     ) {
@@ -269,6 +294,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         val kept = before.values.filter { it.key !in chainKeys && (it.round < watchedFrom || it.ticket == null) }
+            .map { r -> if (r.key in goneOlder) r.copy(ticket = null, outcome = if (r.outcome == Outcome.Won) Outcome.Claimed else r.outcome) else r }
         val results = (onChain + closed + kept)
             .sortedWith(compareByDescending<MyResult> { it.round }.thenBy { it.index })
         val fresh = (onChain + closed).filter { r ->
@@ -347,7 +373,15 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
 
     fun connect(sender: ActivityResultSender) = viewModelScope.launch {
         _state.update { it.copy(pending = it.pending + "connect", error = null) }
-        when (val result = wallet.connect(sender)) {
+        walletRequest = kotlin.coroutines.coroutineContext[Job]
+        val result = try {
+            wallet.connect(sender)
+        } catch (e: java.util.concurrent.CancellationException) {
+            TransactionResult.Failure<Unit>("wallet dismissed", e)
+        } finally {
+            walletRequest = null
+        }
+        when (result) {
             is TransactionResult.Success -> {
                 val key = Base58.encodeToString(result.authResult.accounts.first().publicKey)
                 tokenAccount = null
@@ -358,7 +392,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             }
             is TransactionResult.NoWalletFound -> _state.update { it.copy(error = "No Solana wallet found. Install Phantom or Solflare.") }
             is TransactionResult.Failure -> _state.update {
-                it.copy(error = if (authorizationRefused(result.e)) WALLET_REFUSED else "The wallet did not connect: ${result.e.message}")
+                it.copy(error = if (authorizationRefused(result.e)) WALLET_REFUSED else friendly(result.e))
             }
         }
         _state.update { it.copy(pending = it.pending - "connect") }
@@ -388,7 +422,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(wallet = null, identity = null, results = emptyList(), skr = null, lamports = null, seeker = null, showWelcome = true) }
     }
 
-    private fun authorizationRefused(e: Exception) = "authorization request failed" in (e.message ?: "").lowercase()
+    private fun authorizationRefused(e: Throwable) = "authorization request failed" in (e.message ?: "").lowercase()
 
     fun enter(sender: ActivityResultSender) = viewModelScope.launch {
         val s = _state.value
@@ -423,6 +457,12 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         val mint = s.config?.mint ?: return@launch
         val tokenProgram = s.tokenProgram?.let(SolanaPublicKey::from) ?: return@launch
         val ticket = item.ticket?.let(SolanaPublicKey::from) ?: return@launch
+        // The crank pays winners by itself; a claim the app still shows may already be paid.
+        if (runCatching { rpc.accountData(ticket.base58()) }.getOrNull() == null) {
+            settleLocally(item.key, Outcome.Claimed)
+            _state.update { it.copy(message = "${formatSkr(item.prize)} SKR was already paid to your wallet.") }
+            return@launch
+        }
         val ata = DrawProgram.associatedTokenAccount(owner, mint, tokenProgram)
         val ok = send(sender, item.key, "${formatSkr(item.prize)} SKR is in your wallet.") {
             listOf(
@@ -476,6 +516,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             // The wallet only signs; the app broadcasts. Phantom's own send went
             // through its servers, which failed from this network, and it reported a
             // signature for a transaction that never reached the chain.
+            walletRequest = kotlin.coroutines.coroutineContext[Job]
             val result = wallet.transact(sender) { auth ->
                 val account = Base58.encodeToString(auth.accounts.first().publicKey)
                 if (account != payer.base58()) throw AccountSwitched(account)
@@ -485,6 +526,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 val message = MessageCompiler.compile(payer, DrawProgram.computeBudget() + instructions, blockhash)
                 signTransactions(arrayOf(Transaction(message).serialize()))
             }
+            walletRequest = null
             val signed = when (result) {
                 is TransactionResult.Success -> result.payload.signedPayloads.first()
                 is TransactionResult.NoWalletFound -> throw IllegalStateException("No Solana wallet found")
@@ -519,6 +561,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(error = "The approval took too long and the transaction expired. Please try again.") }
         } catch (e: Exception) {
             Log.w(TAG, "send failed", e)
+            walletRequest = null
             _state.update { it.copy(error = friendly(e)) }
         }
         _state.update { it.copy(pending = it.pending - pendingKey) }
@@ -540,35 +583,47 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         Base58.encodeToString(signed.copyOfRange(i, i + 32))
     }.getOrNull()
 
-    private fun friendly(e: Exception): String {
-        val text = e.message ?: e.toString()
+    /**
+     * Every failure in words a player can act on. The raw error goes to the log;
+     * the screen never shows JSON, an exception class or an RPC code.
+     */
+    private fun friendly(e: Throwable): String {
+        Log.w(TAG, "shown to the player as a friendly error", e)
+        if (e is AccountSwitched) {
+            session.wallet = e.account
+            tokenAccount = null
+            ticketAddresses.clear()
+            _state.update { it.copy(wallet = e.account, identity = null, results = store.load(e.account)) }
+            return "Your wallet is now on account ${e.account.take(4)}…${e.account.takeLast(4)}. The app switched to it — try again."
+        }
+        val chain = generateSequence(e) { it.cause }.toList()
+        val text = chain.joinToString(" ") { "${it.javaClass.name} ${it.message.orEmpty()}" }
+        val lower = text.lowercase()
         DrawError.from(text)?.let { return it.userMessage }
         return when {
-            "insufficient" in text.lowercase() -> "Not enough devnet SOL for the fee."
+            chain.any { it is WalletDismissed } -> "Cancelled in your wallet — nothing was signed or sent."
+            chain.any { it is java.util.concurrent.CancellationException || it is java.util.concurrent.TimeoutException } ->
+                "Your wallet didn't answer in time, so nothing was signed or sent. Try again when you're ready."
+            authorizationRefused(e) -> WALLET_REFUSED
+            "insufficient" in lower -> "Not enough devnet SOL for the fee. Use \"Get free devnet SOL\" and try again."
             // Match the RPC's own words: a simulation error carries "replacementBlockhash"
             // in its payload, and a bare "blockhash" match called a program error expired.
-            "blockhash not found" in text.lowercase() -> "The transaction expired before it was sent. Try again."
-            authorizationRefused(e) -> WALLET_REFUSED
-            e is AccountSwitched -> {
-                session.wallet = e.account
-                tokenAccount = null
-                ticketAddresses.clear()
-                _state.update { it.copy(wallet = e.account, identity = null, results = store.load(e.account)) }
-                "Your wallet is now on account ${e.account.take(4)}…${e.account.takeLast(4)}. The app switched to it — try again."
-            }
-            // The wallet ended the session without an answer (closed, backgrounded,
-            // or it gave up): nothing was signed and nothing was sent.
-            e is java.util.concurrent.CancellationException ->
-                "The wallet closed before signing, so nothing was sent. Try again."
-            "429" in text || "too many requests" in text.lowercase() ->
-                "Solana devnet is busy right now. Wait a few seconds and try again."
-            else -> text.take(120)
+            "blockhash not found" in lower -> "The approval took too long and the transaction expired. Nothing was sent — try again."
+            "0xbc4" in lower || "accountnotinitialized" in lower -> "That ticket is already settled — there is nothing left to do for it."
+            "429" in lower || "too many requests" in lower -> "Solana devnet is busy right now. Wait a few seconds and try again."
+            "simulation failed" in lower -> "Solana turned this transaction down, so nothing was sent or charged. Try again in a moment."
+            chain.any { it is java.io.IOException } -> "No connection to Solana right now. Check your internet and try again."
+            else -> "Something went wrong and nothing was sent. Try again."
         }
     }
 
     private companion object {
         const val TAG = "DailyDraw"
         const val POLL_MS = 5_000L
+        /** After coming back from the wallet, how long a real answer may take to arrive. */
+        const val WALLET_GRACE_MS = 6_000L
+        /** Older remembered tickets checked per poll; with the watched ones it stays in one call. */
+        const val MAX_OLD_CHECKS = 40
         /** The crank needs a minute or two after draw time: commit, oracle reveal, scoring. */
         const val RESULT_SLACK_MS = 120_000L
         const val AIRDROP_LAMPORTS = 500_000_000L
