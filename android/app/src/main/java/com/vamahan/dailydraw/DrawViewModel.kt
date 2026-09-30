@@ -65,6 +65,8 @@ data class UiState(
     val selection: Set<Int> = emptySet(),
     /** Actions waiting for the wallet or the chain: "enter", "collect", or a result key. */
     val pending: Set<String> = emptySet(),
+    /** The sign-in screen: shown whenever no wallet is connected, until "look around". */
+    val showWelcome: Boolean = false,
     /** One-shot notice for the snackbar: something worked. */
     val message: String? = null,
     /** Something failed: stays on screen, next to the action, until dismissed or retried. */
@@ -90,7 +92,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         connectionIdentity = ConnectionIdentity(
             identityUri = Uri.parse("https://github.com/vamahan"),
             iconUri = Uri.parse("favicon.ico"),
-            identityName = "Daily Draw",
+            identityName = "Goldgrid",
         ),
     ).apply { blockchain = Solana.Devnet }
 
@@ -113,6 +115,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 config = saved, tokenProgram = session.tokenProgram, clockOffset = session.clockOffset,
                 roundId = saved?.roundAt(System.currentTimeMillis() / 1000 + session.clockOffset) ?: 0,
                 wallet = wallet, results = wallet?.let(store::load).orEmpty(),
+                showWelcome = wallet == null,
             )
         }
     }
@@ -349,12 +352,14 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(pending = it.pending - "connect") }
     }
 
+    fun welcomed() = _state.update { it.copy(showWelcome = false) }
+
     /** Forgets the wallet on this device; results stay stored per wallet for its return. */
     fun disconnect() {
         session.wallet = null
         tokenAccount = null
         ticketAddresses.clear()
-        _state.update { it.copy(wallet = null, identity = null, results = emptyList(), skr = null, lamports = null, seeker = null) }
+        _state.update { it.copy(wallet = null, identity = null, results = emptyList(), skr = null, lamports = null, seeker = null, showWelcome = true) }
     }
 
     private fun authorizationRefused(e: Exception) = "authorization request failed" in (e.message ?: "").lowercase()

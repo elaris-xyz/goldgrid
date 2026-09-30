@@ -15,6 +15,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.util.Log
+import com.vamahan.dailydraw.draw.DrawConfig
 import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
@@ -31,7 +32,8 @@ import kotlinx.coroutines.launch
  * not settled yet only moves the alarm a minute later.
  */
 object ResultAlarm {
-    private const val CHANNEL = "results"
+    // A channel's sound is fixed when it is created: the chime needed a new one.
+    private const val CHANNEL = "results_chime"
     internal const val RETRY_MS = 60_000L
     private const val GOLD = 0xFFF5C451.toInt()
     private const val INK = 0xFF0E0F13.toInt()
@@ -69,14 +71,16 @@ object ResultAlarm {
             if (attempt < MAX_TRIES) schedule(context, round, index, ticket, picks, System.currentTimeMillis() + RETRY_MS, attempt + 1)
             return
         }
+        val config = Session(context).configData?.let { runCatching { DrawConfig.decode(it) }.getOrNull() }
+        val label = config?.labelOf(round) ?: "#$round"
         val (title, text) = when (result.outcome) {
             Outcome.Won -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
-                "Round #$round: ${result.matches} of your numbers came up and nobody did better. Tap to collect it."
+                "Round $label: ${result.matches} of your numbers came up and nobody did better. Tap to collect it."
             Outcome.Claimed -> "🎉 You won ${formatSkr(result.prize)} SKR!" to
-                "Round #$round: ${result.matches} of your numbers came up and nobody did better. It's already in your wallet."
+                "Round $label: ${result.matches} of your numbers came up and nobody did better. It's already in your wallet."
             Outcome.Matched -> "So close — ${result.matches} matched" to
-                "Round #$round went to a ticket with ${result.best}. A new round is open now."
-            Outcome.NoMatch -> "Round #$round is drawn" to
+                "Round $label went to a ticket with ${result.best}. A new round is open now."
+            Outcome.NoMatch -> "Round $label is drawn" to
                 "No match this time. The next round is open — keep your streak going."
             Outcome.Waiting, Outcome.Drawing -> return // handled above
         }
@@ -124,7 +128,17 @@ object ResultAlarm {
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Draw results", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.deleteNotificationChannel("results")
+        val chime = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.goldgrid_chime}")
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL, "Draw results", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(chime, android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 120, 80, 120, 80, 260)
+            },
+        )
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE,

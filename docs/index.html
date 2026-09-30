@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Goldgrid</title>
+<meta name="description" content="Goldgrid: a free number draw for Solana Seeker owners. Pick five numbers, a new round every five minutes, provably fair Switchboard randomness, prizes paid straight to your wallet.">
+<link rel="icon" href="favicon.png">
+<meta property="og:title" content="Goldgrid — Pick five. Strike gold.">
+<meta property="og:description" content="A free, provably fair number draw for Solana Seeker owners.">
+<meta property="og:image" content="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --gold: #FFD803;
+    --gold-soft: rgba(255, 216, 3, 0.14);
+    --ink: #0B0C10;
+    --panel: #14161D;
+    --panel-2: #1B1E27;
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #F4F5F7;
+    --muted: #9AA0AD;
+    --win: #4ADE80;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--ink); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+
+  /* nav */
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(12px);
+        background: rgba(11, 12, 16, 0.72); border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; align-items: center; gap: 14px; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 900; font-size: 20px; text-decoration: none; }
+  .brand img { width: 32px; height: 32px; border-radius: 8px; background: #fff; padding: 3px; }
+  nav .links { margin-left: auto; display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  nav .links a { text-decoration: none; }
+  nav .links a:hover { color: var(--text); }
+  @media (max-width: 720px) { nav .links { display: none; } }
+
+  /* hero */
+  .hero { position: relative; overflow: hidden; padding: 88px 0 96px; }
+  .hero::before { content: ""; position: absolute; inset: -30% -10% auto; height: 120%;
+    background: radial-gradient(ellipse at 70% 30%, rgba(255, 216, 3, 0.16), transparent 55%); pointer-events: none; }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: center; }
+  @media (max-width: 900px) { .hero .wrap { grid-template-columns: 1fr; gap: 48px; } .hero { padding-top: 56px; } }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--gold);
+             background: var(--gold-soft); border: 1px solid rgba(255, 216, 3, 0.25); padding: 6px 12px; border-radius: 999px; }
+  .eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 10px var(--gold); animation: blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  h1 { font-size: clamp(42px, 6.4vw, 76px); line-height: 1.02; margin: 20px 0 18px; letter-spacing: -0.03em; font-weight: 900; }
+  h1 span { color: var(--gold); }
+  .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 560px; margin: 0 0 32px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 12px; font-weight: 700;
+         text-decoration: none; font-size: 15px; transition: transform .15s ease, background .15s ease; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--gold); color: #111; }
+  .btn.ghost { border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03); }
+  .note { font-size: 13px; color: var(--muted); margin-top: 16px; }
+
+  /* the live grid */
+  .grid-card { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--line);
+               border-radius: 28px; padding: 26px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45); }
+  .grid-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
+  .grid-head b { font-size: 15px; }
+  .grid-head span { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .balls { display: grid; grid-template-columns: repeat(9, 1fr); gap: 7px; }
+  .ball { aspect-ratio: 1; border-radius: 50%; background: #262933; display: grid; place-items: center;
+          font-size: 12px; font-weight: 600; color: #cfd3dc; transition: background .35s ease, transform .35s cubic-bezier(.3,1.6,.5,1), color .35s; }
+  .ball.on { background: var(--gold); color: #111; transform: scale(1.08); box-shadow: 0 0 18px rgba(255, 216, 3, 0.45); }
+  .ball.hit { background: var(--win); color: #0b0c10; box-shadow: 0 0 18px rgba(74, 222, 128, 0.5); }
+  .grid-foot { display: flex; justify-content: space-between; margin-top: 18px; font-size: 13px; color: var(--muted); }
+  .grid-foot b { color: var(--gold); }
+
+  section { padding: 88px 0; border-top: 1px solid var(--line); }
+  .kicker { color: var(--gold); font-weight: 700; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }
+  h2 { font-size: clamp(30px, 4vw, 44px); letter-spacing: -0.02em; margin: 10px 0 14px; line-height: 1.1; }
+  .sub { color: var(--muted); max-width: 640px; font-size: 17px; margin: 0 0 44px; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 820px) { .steps { grid-template-columns: 1fr; } }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; }
+  .step .n { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-weight: 900;
+             background: var(--gold-soft); color: var(--gold); margin-bottom: 16px; }
+  .step h3 { margin: 0 0 8px; font-size: 19px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  /* fairness flow */
+  .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; position: relative; }
+  @media (max-width: 820px) { .flow { grid-template-columns: 1fr 1fr; gap: 14px; } }
+  .node { position: relative; padding: 22px 18px 22px 0; }
+  .node .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 6px var(--gold-soft); margin-bottom: 18px; }
+  .node::after { content: ""; position: absolute; top: 28px; left: 20px; right: 0; height: 2px;
+                 background: linear-gradient(90deg, rgba(255,216,3,.6), rgba(255,216,3,.08)); }
+  .node:last-child::after { display: none; }
+  @media (max-width: 820px) { .node::after { display: none; } }
+  .node h4 { margin: 0 0 6px; font-size: 16px; }
+  .node p { margin: 0; color: var(--muted); font-size: 14px; }
+  .proof { margin-top: 36px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+           padding: 20px 22px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; color: #c8ccd5; overflow-x: auto; }
+  .proof .ok { color: var(--win); }
+  .proof .k { color: var(--gold); }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 820px) { .two { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; }
+  .panel h3 { margin: 0 0 10px; font-size: 21px; }
+  .panel p, .panel li { color: var(--muted); font-size: 15px; }
+  .panel ul { padding-left: 18px; margin: 12px 0 0; }
+  .panel li { margin: 6px 0; }
+  .stat { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 18px; }
+  .stat div b { display: block; font-size: 28px; font-weight: 900; color: var(--text); }
+  .stat div span { font-size: 13px; color: var(--muted); }
+
+  .checks { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 820px) { .checks { grid-template-columns: 1fr; } }
+  .check { display: flex; gap: 12px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 14px; padding: 16px 18px; font-size: 15px; }
+  .check i { flex: none; width: 22px; height: 22px; border-radius: 50%; background: rgba(74,222,128,.15); color: var(--win);
+             display: grid; place-items: center; font-style: normal; font-size: 13px; font-weight: 900; }
+  .check span { color: var(--muted); }
+  .check b { color: var(--text); }
+
+  .final { text-align: center; }
+  .final .cta { justify-content: center; }
+  footer { border-top: 1px solid var(--line); padding: 34px 0 48px; color: var(--muted); font-size: 13px; }
+  footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="">Goldgrid</a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#fair">Provably fair</a>
+      <a href="#seeker">Seeker</a>
+      <a href="#sponsors">Sponsors</a>
+      <a href="#security">Security</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <span class="eyebrow"><i></i> Live on Solana devnet · built for Seeker</span>
+      <h1>Pick five.<br><span>Strike gold.</span></h1>
+      <p class="lede">A free number draw for Solana Seeker owners. A new round every five minutes, numbers drawn by on-chain randomness nobody controls, and prizes that land in your wallet by themselves.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/elaris-xyz/daily-draw/releases">Get the Android app</a>
+        <a class="btn ghost" href="https://github.com/elaris-xyz/daily-draw">Read the code ↗</a>
+      </div>
+      <p class="note">Free to play. No purchase, no deposit, no house edge — sponsors fund every prize.</p>
+    </div>
+    <div class="grid-card" aria-hidden="true">
+      <div class="grid-head"><b>Round <span id="label">2026-09-30 · #50</span></b><span id="timer">04:00</span></div>
+      <div class="balls" id="balls"></div>
+      <div class="grid-foot"><span id="state">Picking five…</span><span>Pot <b id="pot">12</b> SKR</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="how">
+  <div class="wrap">
+    <div class="kicker">How it works</div>
+    <h2>Three taps a round. That's the whole game.</h2>
+    <p class="sub">No sign-ups, no deposits, no odds tables. Connect the wallet on your Seeker and play.</p>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><h3>Pick five</h3><p>Choose five numbers from 1 to 85 — or shake your phone for a quick pick. Your ticket is free.</p></div>
+      <div class="step"><div class="n">2</div><h3>Watch the draw</h3><p>When the timer ends, Switchboard randomness on Solana draws the winning five. The balls turn over one by one.</p></div>
+      <div class="step"><div class="n">3</div><h3>Get paid</h3><p>The best match takes the pot, ties split it. The prize lands in your wallet automatically — nothing to claim.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="fair">
+  <div class="wrap">
+    <div class="kicker">Provably fair</div>
+    <h2>Nobody picks the numbers. Not even us.</h2>
+    <p class="sub">The draw is a commit–reveal on Switchboard's on-demand randomness, enforced by the Goldgrid program. Every step is a public Solana transaction you can check.</p>
+    <div class="flow">
+      <div class="node"><div class="dot"></div><h4>Entries close</h4><p>Tickets are locked on-chain. Nothing can be added after this point.</p></div>
+      <div class="node"><div class="dot"></div><h4>Commit</h4><p>Randomness is committed only after entries close, from a fresh slot.</p></div>
+      <div class="node"><div class="dot"></div><h4>Reveal</h4><p>The program accepts only the value from that exact commit — a re-roll is refused.</p></div>
+      <div class="node"><div class="dot"></div><h4>Score &amp; pay</h4><p>Every ticket is scored on-chain, winners are paid, deposits are returned.</p></div>
+    </div>
+    <div class="proof">
+      <div><span class="k">round 503</span>  Enter → RandomnessCommit + CommitDraw → RandomnessReveal + RevealDraw → ScoreTickets</div>
+      <div><span class="ok">✓</span> a re-rolled value is refused → RandomnessExpired</div>
+      <div><span class="ok">✓</span> a fresh commit before the timeout is refused → RevealPending</div>
+      <div><span class="ok">✓</span> every result links to its proof on Solana Explorer, in the app</div>
+    </div>
+  </div>
+</section>
+
+<section id="seeker">
+  <div class="wrap two">
+    <div class="panel">
+      <div class="kicker">Built for Seeker</div>
+      <h3>One device, one free ticket.</h3>
+      <p>On mainnet each ticket is tied to a Seeker Genesis Token, verified on-chain from its Token-2022 group membership. One Seeker can't pose as a thousand wallets, so the pot goes to real players.</p>
+      <ul>
+        <li>Mobile Wallet Adapter — sign with the wallet already on your phone</li>
+        <li>Play every day to build a streak: each 7 days adds a ticket, up to 5</li>
+        <li>Results arrive as a notification, even with the app closed</li>
+      </ul>
+    </div>
+    <div class="panel" id="sponsors">
+      <div class="kicker">For sponsors</div>
+      <h3>Reach every Seeker, every day.</h3>
+      <p>Sponsors fund the pot in SKR. Each ticket moves a fixed bonus from the sponsor budget into that round's pot, so the prize grows in front of everyone as they play. Rounds nobody wins roll over.</p>
+      <div class="stat">
+        <div><b>1 SKR</b><span>added per ticket</span></div>
+        <div><b>5 min</b><span>per round</span></div>
+        <div><b>0</b><span>paid to enter</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap">
+    <div class="kicker">Security</div>
+    <h2>Audited, tested on-chain, open source.</h2>
+    <p class="sub">Everything here is checked against the live devnet program, not just in unit tests.</p>
+    <div class="checks">
+      <div class="check"><i>✓</i><div><b>Full audit, every finding fixed.</b> <span>15 issues found and fixed, including a draw re-roll, before redeploying under a new program id.</span></div></div>
+      <div class="check"><i>✓</i><div><b>Payouts go only to owners.</b> <span>Anyone may trigger a payout; a claim redirected to someone else's account is refused on-chain.</span></div></div>
+      <div class="check"><i>✓</i><div><b>No keys with power in the cloud.</b> <span>The hosted crank signs with a fee-only key that holds no authority over the program.</span></div></div>
+      <div class="check"><i>✓</i><div><b>Schedules can't rewrite history.</b> <span>Retiming rounds may only move numbering forward; past rounds keep their stored times.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <h2>Your five numbers are waiting.</h2>
+    <p class="sub" style="margin: 0 auto 32px;">Install Goldgrid on your Seeker and play the next round — it starts in a few minutes.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/elaris-xyz/daily-draw/releases">Get the Android app</a>
+      <a class="btn ghost" href="https://github.com/elaris-xyz/daily-draw">View on GitHub ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Goldgrid · Free to play, no purchase necessary. Devnet demo: prizes are test SKR.</span>
+    <span>Built on Solana · Switchboard · Mobile Wallet Adapter</span>
+  </div>
+</footer>
+
+<script>
+  // A round plays out in the hero: five numbers are picked, the draw turns over,
+  // the hits light up green, the pot grows, and it starts again.
+  const balls = document.getElementById("balls");
+  const cells = [];
+  for (let n = 1; n <= 45; n++) {
+    const b = document.createElement("div");
+    b.className = "ball"; b.textContent = n; balls.appendChild(b); cells.push(b);
+  }
+  const state = document.getElementById("state"), timer = document.getElementById("timer"), pot = document.getElementById("pot");
+  const label = document.getElementById("label");
+  const pick = (k) => [...cells.keys()].sort(() => Math.random() - 0.5).slice(0, k);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const day = new Date().toISOString().slice(0, 10);
+  let round = Math.floor((Date.now() % 86400000) / 300000) + 1, value = 12;
+  async function play() {
+    label.textContent = `${day} · #${round}`;
+    cells.forEach((c) => c.classList.remove("on", "hit"));
+    state.textContent = "Picking five…";
+    const mine = pick(5);
+    for (const i of mine) { cells[i].classList.add("on"); await wait(380); }
+    for (let s = 4; s >= 0; s--) { timer.textContent = `0${s}:00`; value += 1; pot.textContent = value; await wait(420); }
+    state.textContent = "Drawing…";
+    const drawn = [...new Set([...mine.slice(0, 2), ...pick(8)])].slice(0, 5);
+    await wait(500);
+    for (const i of drawn) { if (mine.includes(i)) cells[i].classList.replace("on", "hit"); await wait(420); }
+    const hits = drawn.filter((i) => mine.includes(i)).length;
+    state.textContent = `${hits} matched — best match wins ${value} SKR`;
+    await wait(2600);
+    round += 1; value = 12;
+    play();
+  }
+  play();
+</script>
+</body>
+</html>

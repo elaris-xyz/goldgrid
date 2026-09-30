@@ -15,6 +15,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -64,6 +69,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -79,12 +86,13 @@ import com.vamahan.dailydraw.draw.DrawProgram
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-private val Gold = Color(0xFFF5C451)
-private val Ink = Color(0xFF0E0F13)
-private val Card = Color(0xFF1A1C23)
-private val CardHigh = Color(0xFF242732)
-private val Muted = Color(0xFF8A8F9C)
-private val Win = Color(0xFF4ADE80)
+// The brand's gold, from the Goldgrid icon.
+internal val Gold = Color(0xFFFFD803)
+internal val Ink = Color(0xFF0E0F13)
+internal val Card = Color(0xFF1A1C23)
+internal val CardHigh = Color(0xFF242732)
+internal val Muted = Color(0xFF8A8F9C)
+internal val Win = Color(0xFF4ADE80)
 private val Alert = Color(0xFFF87171)
 private const val CLOSING_SECS = 30
 /** Past this the screen stops stretching: a tablet shows a phone-width column. */
@@ -152,6 +160,10 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
     val picking = open && left > 0
     if (picking) ShakeToPick { vm.quickPick() }
 
+    if (s.showWelcome) {
+        WelcomeScreen(onConnect = { vm.welcomed(); vm.connect(sender) }, onLookAround = vm::welcomed)
+        return
+    }
     var showActivity by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = showActivity) { showActivity = false }
 
@@ -197,9 +209,13 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
 @Composable
 private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onDisconnect: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Image(
+            painterResource(R.drawable.goldgrid_logo), contentDescription = null,
+            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(Color.White).padding(4.dp),
+        )
         Column(Modifier.weight(1f)) {
-            Text("Daily Draw", color = Gold, fontSize = 24.sp, fontWeight = FontWeight.Black)
-            Text("Free draw for Seeker owners · devnet demo", color = Muted, fontSize = 12.sp)
+            Text("Goldgrid", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
+            Text("Pick five. Strike gold. · devnet demo", color = Muted, fontSize = 12.sp)
         }
         val w = s.wallet
         if (w != null) {
@@ -250,16 +266,21 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
             }
             return@Column
         }
-        val secs = ((if (open) config.closeTs(s.roundId) else config.drawTs(s.roundId)) - now).coerceAtLeast(0)
-        Text("Round #${s.roundId} · a new round every ${config.roundSecs / 60} min in this demo", color = Muted, fontSize = 12.sp)
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        val phaseEnd = if (open) config.closeTs(s.roundId) else config.drawTs(s.roundId)
+        val phaseStart = if (open) config.drawTs(s.roundId) - config.roundSecs else config.closeTs(s.roundId)
+        val secs = (phaseEnd - now).coerceAtLeast(0)
+        Text("Round ${config.labelOf(s.roundId)} · a new round every ${config.roundSecs / 60} min", color = Muted, fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(if (open) "Entries close in" else "Numbers drawn in", color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
             Text(clock(secs), color = Gold, fontSize = 34.sp, fontWeight = FontWeight.Black)
+            CountdownRing(secs.toFloat() / (phaseEnd - phaseStart).coerceAtLeast(1))
         }
         val pot = s.round?.pot ?: config.carry
         val tickets = s.round?.tickets ?: 0
         val rolled = (pot - config.perTicketBonus * tickets).coerceAtLeast(0)
-        Text("Prize pot ${formatSkr(pot)} SKR", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        // The pot counts up when a ticket lands, so growth is something you see.
+        val shownPot by animateFloatAsState(pot / 1_000_000f, tween(900), label = "pot")
+        Text("Prize pot ${"%.2f".format(shownPot).trimEnd('0').trimEnd('.')} SKR", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Text(
             "${formatSkr(config.perTicketBonus)} SKR per ticket × $tickets" +
                 (if (rolled > 0) " + ${formatSkr(rolled)} rolled over from rounds nobody won" else "") +
@@ -273,11 +294,10 @@ private fun NowCard(s: UiState, now: Long, open: Boolean, left: Int) {
                 s.wallet == null -> "Pick 5 numbers, then connect a wallet to enter. Entry is free."
                 left > 0 && mine.isEmpty() -> "Pick 5 numbers below. Entry is free — the sponsor adds ${formatSkr(config.perTicketBonus)} SKR to the pot per ticket."
                 left > 0 -> "You're in. Your streak earned you another ticket — pick again below."
-                else -> "You're in! Your result appears below when the draw ends."
+                else -> "You're in! Your ticket is waiting below — the result lands there when the draw ends."
             },
             color = Muted, fontSize = 13.sp,
         )
-        mine.forEach { Balls(it.picks) }
     }
 }
 
@@ -341,10 +361,14 @@ private fun NumberGrid(selection: Set<Int>, onToggle: (Int) -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 row.forEach { n ->
                     val on = n in selection
+                    val pop by animateFloatAsState(
+                        if (on) 1.08f else 1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "pop",
+                    )
                     Box(
                         Modifier
                             .weight(1f)
                             .aspectRatio(1f)
+                            .scale(pop)
                             .clip(CircleShape)
                             .background(if (on) Gold else Card)
                             .clickable {
@@ -403,17 +427,20 @@ private fun Results(
 @Composable
 private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fresh: Boolean, onClaim: () -> Unit, onRevealed: () -> Unit) {
     val won = r.outcome == Outcome.Won || r.outcome == Outcome.Claimed
+    val waiting = r.outcome == Outcome.Waiting || r.outcome == Outcome.Drawing
+    Box {
     Column(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(if (won) Win.copy(alpha = 0.10f) else Card)
+            .breathing(waiting)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(s.config?.labelOf(r.round) ?: "Round #${r.round}", color = Color.White, fontWeight = FontWeight.Bold)
                 if (r.drawTs > 0) Text(when_(r.drawTs), color = Muted, fontSize = 12.sp)
             }
             val drawIn = (if (r.drawTs > 0) r.drawTs else s.config?.drawTs(r.round) ?: now) - now
@@ -452,6 +479,8 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
                 Text(if (pending) "Claiming — confirm in your wallet…" else "Claim ${formatSkr(r.prize)} SKR", fontWeight = FontWeight.Bold)
             }
         }
+    }
+    if (fresh && won) Confetti(Modifier.matchParentSize())
     }
 }
 
@@ -521,7 +550,7 @@ private fun RevealBalls(numbers: List<Int>, animate: Boolean, onDone: () -> Unit
     }
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         numbers.forEachIndexed { i, n ->
-            Ball(if (i < shown) "$n" else "?", fill = if (i < shown) Gold else CardHigh, text = if (i < shown) Ink else Muted)
+            PoppingBall(if (i < shown) "$n" else "?", fill = if (i < shown) Gold else CardHigh, text = if (i < shown) Ink else Muted, revealed = animate && i < shown)
         }
     }
 }

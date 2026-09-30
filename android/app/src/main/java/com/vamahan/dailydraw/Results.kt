@@ -7,6 +7,19 @@ import com.vamahan.dailydraw.draw.RoundStatus
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * A round as people say it: the UTC date it starts on and its number that day,
+ * "2026-09-30 · #50". The on-chain id keeps counting from genesis and reaches
+ * the thousands within days of five-minute rounds; nobody should read that.
+ */
+fun roundLabel(startTs: Long, roundSecs: Long): String {
+    val day = Math.floorDiv(startTs, 86_400L)
+    val index = (startTs - day * 86_400L) / roundSecs + 1
+    return "${java.time.LocalDate.ofEpochDay(day)} · #$index"
+}
+
+fun com.vamahan.dailydraw.draw.DrawConfig.labelOf(round: Long) = roundLabel(genesisTs + round * roundSecs, roundSecs)
+
 /** Where one of the player's tickets stands, in the words the screen uses. */
 enum class Outcome { Waiting, Drawing, NoMatch, Matched, Won, Claimed }
 
