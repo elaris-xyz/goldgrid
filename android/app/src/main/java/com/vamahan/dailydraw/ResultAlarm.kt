@@ -88,18 +88,19 @@ object ResultAlarm {
      * below them with every hit in green. Words alone read like a bank alert.
      */
     private fun ballsPicture(winning: List<Int>, picks: List<Int>): Bitmap {
+        // 2:1, as Android shows a big picture: anything taller is cropped top and bottom.
         val width = 1000
-        val height = 440
+        val height = 500
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(INK)
-        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = MUTED; textSize = 34f }
+        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = MUTED; textSize = 31f }
         val ball = Paint(Paint.ANTI_ALIAS_FLAG)
         val digits = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 54f; textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD
+            textSize = 46f; textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD
         }
-        val radius = 62f
-        val gap = 36f
+        val radius = 52f
+        val gap = 34f
         val startX = (width - (5 * 2 * radius + 4 * gap)) / 2 + radius
         fun row(numbers: List<Int>, y: Float, fill: (Int) -> Int, ink: (Int) -> Int) {
             numbers.forEachIndexed { i, n ->
@@ -107,14 +108,14 @@ object ResultAlarm {
                 ball.color = fill(n)
                 canvas.drawCircle(x, y, radius, ball)
                 digits.color = ink(n)
-                canvas.drawText("$n", x, y + 19f, digits)
+                canvas.drawText("$n", x, y + 16f, digits)
             }
         }
         val hits = picks.filter { it in winning }.toSet()
-        canvas.drawText("Winning numbers", startX - radius, 52f, label)
-        row(winning, 135f, { GOLD }, { INK })
-        canvas.drawText("Your numbers", startX - radius, 262f, label)
-        row(picks, 345f, { if (it in hits) WIN else CARD }, { if (it in hits) INK else WHITE })
+        canvas.drawText("Winning numbers", startX - radius, 98f, label)
+        row(winning, 172f, { GOLD }, { INK })
+        canvas.drawText("Your numbers", startX - radius, 296f, label)
+        row(picks, 370f, { if (it in hits) WIN else CARD }, { if (it in hits) INK else WHITE })
         return bitmap
     }
 
