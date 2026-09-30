@@ -84,7 +84,8 @@ object ResultAlarm {
                 "No match this time. The next round is open — keep your streak going."
             Outcome.Waiting, Outcome.Drawing -> return // handled above
         }
-        notify(context, round, title, text, ballsPicture(r.winning, picks))
+        val alert = if (result.outcome == Outcome.Won || result.outcome == Outcome.Claimed) Alert.Win else Alert.Result
+        notify(context, alert, round, title, text, ballsPicture(r.winning, picks))
     }
 
     /**
@@ -123,37 +124,13 @@ object ResultAlarm {
         return bitmap
     }
 
-    private fun notify(context: Context, round: Long, title: String, text: String, picture: Bitmap) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.deleteNotificationChannel("results")
-        val chime = android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.goldgrid_chime}")
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Draw results", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(chime, android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 120, 80, 120, 80, 260)
-            },
-        )
-        val open = PendingIntent.getActivity(
-            context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = android.app.Notification.Builder(context, CHANNEL)
-            .setSmallIcon(R.drawable.ic_stat_draw)
-            .setColor(GOLD)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setLargeIcon(picture)
-            .setStyle(android.app.Notification.BigPictureStyle().bigPicture(picture).setSummaryText(text).bigLargeIcon(null as Bitmap?))
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .build()
-        manager.notify(round.toInt(), notification)
+    private fun notify(context: Context, alert: Alert, round: Long, title: String, text: String, picture: Bitmap) {
+        Notifier.post(context, alert, round.toInt()) {
+            setContentTitle(title)
+            setContentText(text)
+            setLargeIcon(picture)
+            setStyle(android.app.Notification.BigPictureStyle().bigPicture(picture).setSummaryText(text).bigLargeIcon(null as Bitmap?))
+        }
     }
 }
 

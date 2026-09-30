@@ -39,6 +39,13 @@ const val LOW_SOL_LAMPORTS = 5_000_000L
 
 private class AccountSwitched(val account: String) : Exception("wallet switched to $account")
 
+data class NotifySettings(
+    val wins: Boolean = true,
+    val results: Boolean = true,
+    val rounds: RoundReminders = RoundReminders.Off,
+    val sound: Boolean = true,
+)
+
 /** Who the program counts as "one Seeker": the SGT mint, or the wallet in demo mode. */
 data class Identity(val key: String, val sgtTokens: String?)
 
@@ -65,6 +72,7 @@ data class UiState(
     val selection: Set<Int> = emptySet(),
     /** Actions waiting for the wallet or the chain: "enter", "collect", or a result key. */
     val pending: Set<String> = emptySet(),
+    val settings: NotifySettings = NotifySettings(),
     /** The sign-in screen: shown whenever no wallet is connected, until "look around". */
     val showWelcome: Boolean = false,
     /** One-shot notice for the snackbar: something worked. */
@@ -117,11 +125,13 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
                 roundId = saved?.roundAt(System.currentTimeMillis() / 1000 + session.clockOffset) ?: 0,
                 wallet = wallet, results = wallet?.let(store::load).orEmpty(),
                 showWelcome = wallet == null,
+                settings = NotifySettings(session.notifyWins, session.notifyResults, session.roundReminders, session.notifySound),
             )
         }
     }
 
     fun start() {
+        RoundReminder.reschedule(getApplication())
         if (poller?.isActive == true) return
         poller = viewModelScope.launch {
             var tick = 0
@@ -354,6 +364,20 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun welcomed() = _state.update { it.copy(showWelcome = false) }
+    fun showIntro() = _state.update { it.copy(showWelcome = true) }
+
+    fun setNotifyWins(on: Boolean) { session.notifyWins = on; refreshSettings() }
+    fun setNotifyResults(on: Boolean) { session.notifyResults = on; refreshSettings() }
+    fun setNotifySound(on: Boolean) { session.notifySound = on; refreshSettings() }
+    fun setRoundReminders(mode: RoundReminders) {
+        session.roundReminders = mode
+        RoundReminder.reschedule(getApplication())
+        refreshSettings()
+    }
+
+    private fun refreshSettings() = _state.update {
+        it.copy(settings = NotifySettings(session.notifyWins, session.notifyResults, session.roundReminders, session.notifySound))
+    }
 
     /** Forgets the wallet on this device; results stay stored per wallet for its return. */
     fun disconnect() {

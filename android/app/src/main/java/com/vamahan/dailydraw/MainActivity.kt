@@ -52,6 +52,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -93,7 +95,7 @@ internal val Card = Color(0xFF1A1C23)
 internal val CardHigh = Color(0xFF242732)
 internal val Muted = Color(0xFF8A8F9C)
 internal val Win = Color(0xFF4ADE80)
-private val Alert = Color(0xFFF87171)
+private val Danger = Color(0xFFF87171)
 private const val CLOSING_SECS = 30
 /** Past this the screen stops stretching: a tablet shows a phone-width column. */
 private val MAX_CONTENT_WIDTH = 640.dp
@@ -165,14 +167,15 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
         return
     }
     var showActivity by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = showActivity) { showActivity = false }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showActivity || showSettings) { showActivity = false; showSettings = false }
 
     Scaffold(
         containerColor = Ink,
         snackbarHost = { SnackbarHost(snackbar) },
         // The action stays on screen: on a tablet the grid alone is taller than the view.
         bottomBar = {
-            if (!showActivity && picking) ActionBar(s, now) { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) }
+            if (!showActivity && !showSettings && picking) ActionBar(s, now) { if (s.wallet == null) vm.connect(sender) else vm.enter(sender) }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
@@ -184,12 +187,16 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
+                if (showSettings) {
+                    SettingsPage(s, vm, onBack = { showSettings = false }, onIntro = { showSettings = false; vm.showIntro() })
+                    return@Column
+                }
                 if (showActivity) {
                     ActivityPage(s, now, onBack = { showActivity = false }, onClaim = { vm.claim(sender, it) },
                         onCollect = { vm.collect(sender) }, onRevealed = vm::revealed)
                     return@Column
                 }
-                Header(s, onConnect = { vm.connect(sender) }, onBalance = { showActivity = true }, onDisconnect = vm::disconnect)
+                Header(s, onConnect = { vm.connect(sender) }, onBalance = { showActivity = true }, onDisconnect = vm::disconnect, onSettings = { showSettings = true })
                 if (s.networkTrouble) {
                     Text("Connection to Solana devnet is slow — retrying…", color = Gold, fontSize = 13.sp)
                 }
@@ -207,7 +214,7 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
 }
 
 @Composable
-private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onDisconnect: () -> Unit) {
+private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onDisconnect: () -> Unit, onSettings: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Image(
             painterResource(R.drawable.goldgrid_logo), contentDescription = null,
@@ -245,6 +252,10 @@ private fun Header(s: UiState, onConnect: () -> Unit, onBalance: () -> Unit, onD
                 color = Color.White, fontSize = 12.sp,
             )
         }
+        Box(
+            Modifier.size(38.dp).clip(CircleShape).border(1.dp, Gold.copy(alpha = 0.4f), CircleShape).clickable(onClick = onSettings),
+            contentAlignment = Alignment.Center,
+        ) { Text("⚙", color = Color.White, fontSize = 18.sp) }
     }
 }
 
@@ -505,8 +516,8 @@ private fun VerifyLink(round: Long) {
 @Composable
 private fun ErrorCard(text: String, onDismiss: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Alert.copy(alpha = 0.15f))
-            .border(1.dp, Alert.copy(alpha = 0.6f), RoundedCornerShape(12.dp)).padding(12.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Danger.copy(alpha = 0.15f))
+            .border(1.dp, Danger.copy(alpha = 0.6f), RoundedCornerShape(12.dp)).padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
@@ -571,6 +582,85 @@ private fun Ball(label: String, fill: Color, text: Color) {
         Modifier.size(36.dp).clip(CircleShape).background(fill).border(1.dp, Gold.copy(alpha = 0.35f), CircleShape),
         contentAlignment = Alignment.Center,
     ) { Text(label, color = text, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
+}
+
+/** Notifications, the wallet, and where Goldgrid lives. */
+@Composable
+private fun SettingsPage(s: UiState, vm: DrawViewModel, onBack: () -> Unit, onIntro: () -> Unit) {
+    val context = LocalContext.current
+    val uri = LocalUriHandler.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("←", color = Gold, fontSize = 26.sp, modifier = Modifier.clickable(onClick = onBack).padding(end = 14.dp))
+        Text("Settings", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+    SettingsCard("Notifications") {
+        if (!Notifier.canPost(context)) {
+            Text("Notifications are off for Goldgrid on this phone.", color = Danger, fontSize = 14.sp)
+            OutlinedButton(onClick = {
+                context.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName),
+                )
+            }) { Text("Allow notifications") }
+        }
+        Toggle("Wins", "When your numbers take a pot, with the winning balls.", s.settings.wins, vm::setNotifyWins)
+        Toggle("Results", "Every draw you played, even when it was not your round.", s.settings.results, vm::setNotifyResults)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("New rounds", color = Color.White, fontWeight = FontWeight.Bold)
+            Text("A nudge when a fresh round opens. Rounds come every five minutes, so hourly is gentler.", color = Muted, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(RoundReminders.Off to "Off", RoundReminders.Hourly to "Hourly", RoundReminders.EveryRound to "Every round").forEach { (mode, label) ->
+                    val on = s.settings.rounds == mode
+                    Box(
+                        Modifier.clip(RoundedCornerShape(20.dp)).background(if (on) Gold else CardHigh)
+                            .clickable { vm.setRoundReminders(mode) }.padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) { Text(label, color = if (on) Ink else Color.White, fontSize = 13.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal) }
+                }
+            }
+        }
+        Toggle("Sound & vibration", "The Goldgrid chime. Off keeps notifications silent.", s.settings.sound, vm::setNotifySound)
+    }
+    SettingsCard("Wallet") {
+        val w = s.wallet
+        Text(if (w == null) "Not connected" else "${w.take(6)}…${w.takeLast(6)}", color = Color.White, fontSize = 15.sp)
+        if (w != null) OutlinedButton(onClick = { vm.disconnect(); onBack() }) { Text("Disconnect wallet") }
+    }
+    SettingsCard("About") {
+        Text("Goldgrid ${BuildConfig.VERSION_NAME} · Solana devnet", color = Muted, fontSize = 13.sp)
+        listOf(
+            "Goldgrid website ↗" to "https://elaris-xyz.github.io/goldgrid/",
+            "The program on Solana Explorer ↗" to "https://explorer.solana.com/address/${DrawProgram.PROGRAM_ID.base58()}?cluster=devnet",
+            "Source code on GitHub ↗" to "https://github.com/elaris-xyz/goldgrid",
+        ).forEach { (label, link) ->
+            Text(label, color = Gold, fontSize = 14.sp, modifier = Modifier.clickable { uri.openUri(link) }.padding(vertical = 4.dp))
+        }
+        Text("Show the intro again", color = Gold, fontSize = 14.sp, modifier = Modifier.clickable(onClick = onIntro).padding(vertical = 4.dp))
+    }
+}
+
+@Composable
+private fun SettingsCard(title: String, content: @Composable () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(title.uppercase(), color = Gold, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+        content()
+    }
+}
+
+@Composable
+private fun Toggle(title: String, detail: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontWeight = FontWeight.Bold)
+            Text(detail, color = Muted, fontSize = 13.sp)
+        }
+        Switch(
+            checked = on, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(checkedThumbColor = Ink, checkedTrackColor = Gold),
+        )
+    }
 }
 
 /** Every ticket the player has had, newest first, and what it earned. */

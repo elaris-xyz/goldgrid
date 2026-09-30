@@ -31,5 +31,6 @@
             </intent-filter>
         </activity>
         <receiver android:name=".ResultReceiver" android:exported="false" />
+        <receiver android:name=".RoundReceiver" android:exported="false" />
     </application>
 </manifest>

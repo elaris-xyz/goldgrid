@@ -24,6 +24,26 @@ class Session(context: Context) {
         get() = prefs.getString("tokenProgram", null)
         set(value) = prefs.edit().putString("tokenProgram", value).apply()
 
+    var notifyWins: Boolean
+        get() = prefs.getBoolean("notifyWins", true)
+        set(value) = prefs.edit().putBoolean("notifyWins", value).apply()
+
+    var notifyResults: Boolean
+        get() = prefs.getBoolean("notifyResults", true)
+        set(value) = prefs.edit().putBoolean("notifyResults", value).apply()
+
+    var notifySound: Boolean
+        get() = prefs.getBoolean("notifySound", true)
+        set(value) = prefs.edit().putBoolean("notifySound", value).apply()
+
+    var roundReminders: RoundReminders
+        get() = runCatching { RoundReminders.valueOf(prefs.getString("roundReminders", null)!!) }.getOrDefault(RoundReminders.Off)
+        set(value) = prefs.edit().putString("roundReminders", value.name).apply()
+
+    var lastRoundReminder: Long
+        get() = prefs.getLong("lastRoundReminder", 0)
+        set(value) = prefs.edit().putLong("lastRoundReminder", value).apply()
+
     var clockOffset: Long
         get() = prefs.getLong("clockOffset", 0)
         set(value) = prefs.edit().putLong("clockOffset", value).apply()
