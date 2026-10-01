@@ -1,6 +1,7 @@
 {
   "name": "goldgrid-cli",
   "private": true,
+  "license": "BUSL-1.1",
   "type": "module",
   "description": "Devnet end-to-end test and draw crank for the daily_draw program",
   "scripts": {

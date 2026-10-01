@@ -4,7 +4,7 @@
     "name": "daily_draw",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Free nightly draw for Seeker owners: pick 5 of 85, Switchboard picks the winners"
+    "description": "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, Switchboard picks the winners"
   },
   "instructions": [
     {
@@ -427,7 +427,7 @@
       "name": "fund",
       "docs": [
         "A sponsor adds SKR. Each ticket then moves `per_ticket_bonus` of it into",
-        "that night's pot, so the pot grows in front of everyone as people enter."
+        "that round's pot, so the pot grows in front of everyone as people enter."
       ],
       "discriminator": [
         218,
@@ -667,7 +667,7 @@
       "docs": [
         "Scores any number of the round's tickets passed as remaining accounts.",
         "When the last one is scored the round settles: the best match splits the",
-        "pot, and a night where nobody matched anything rolls it to the next one."
+        "pot, and a round where nobody matched anything rolls it to the next one."
       ],
       "discriminator": [
         103,
@@ -1117,7 +1117,7 @@
           {
             "name": "carry",
             "docs": [
-              "Pot waiting for the next round: nights nobody matched, and division dust."
+              "Pot waiting for the next round: rounds nobody matched, and division dust."
             ],
             "type": "u64"
           },

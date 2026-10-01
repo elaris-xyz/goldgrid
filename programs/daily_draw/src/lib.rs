@@ -1,4 +1,5 @@
-//! A free nightly draw for Seeker owners. Pick 5 of 85 before entries close;
+//! Goldgrid: a free number draw for Seeker owners, a round every few minutes
+//! (the admin sets the schedule). Pick 5 of 85 before entries close;
 //! at draw time Switchboard randomness picks the winning numbers and the
 //! tickets with the most matches split a pot that sponsors fund in SKR.
 //! Nobody ever pays to enter: a payment would make this a lottery.
@@ -50,7 +51,7 @@ pub mod daily_draw {
     }
 
     /// A sponsor adds SKR. Each ticket then moves `per_ticket_bonus` of it into
-    /// that night's pot, so the pot grows in front of everyone as people enter.
+    /// that round's pot, so the pot grows in front of everyone as people enter.
     pub fn fund(ctx: Context<Fund>, amount: u64) -> Result<()> {
         require!(amount > 0, DrawError::ZeroAmount);
         let before = ctx.accounts.vault.amount;
@@ -198,7 +199,7 @@ pub mod daily_draw {
 
     /// Scores any number of the round's tickets passed as remaining accounts.
     /// When the last one is scored the round settles: the best match splits the
-    /// pot, and a night where nobody matched anything rolls it to the next one.
+    /// pot, and a round where nobody matched anything rolls it to the next one.
     pub fn score_tickets<'info>(ctx: Context<'_, '_, 'info, 'info, ScoreTickets<'info>>, round_id: u64) -> Result<()> {
         let round = &mut ctx.accounts.round;
         require!(round.status == RoundStatus::Revealed, DrawError::WrongStatus);
@@ -325,7 +326,7 @@ pub struct Config {
     pub entry_secs: i64,
     pub per_ticket_bonus: u64,
     pub sponsor_budget: u64,
-    /// Pot waiting for the next round: nights nobody matched, and division dust.
+    /// Pot waiting for the next round: rounds nobody matched, and division dust.
     pub carry: u64,
     pub require_sgt: bool,
     pub sgt_group: Pubkey,

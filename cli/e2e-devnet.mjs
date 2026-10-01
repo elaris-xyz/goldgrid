@@ -2,7 +2,7 @@
 // oracle: set up (once), fund a pot, enter tickets from three players, check the
 // rules that must refuse, attempt the re-roll attack, run the draw, pay the
 // winners, and return every ticket's rent. Exits non-zero on any mismatch, so a
-// green run means the whole night works, not just a unit.
+// green run means a whole round works, not just a unit.
 import anchor from "@coral-xyz/anchor";
 import * as sb from "@switchboard-xyz/on-demand";
 import { createMint, getAccount, getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID } from "@solana/spl-token";

@@ -1,4 +1,4 @@
-# Runs the nightly draw on GitHub's machines, so no round waits for anyone's
+# Runs the Goldgrid draws on GitHub's machines, so no round waits for anyone's
 # computer to be on. The draw is permissionless: this is one cranker, and anyone
 # can run `node cli/crank.mjs` beside it.
 #

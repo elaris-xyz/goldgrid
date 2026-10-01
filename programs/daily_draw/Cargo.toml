@@ -1,7 +1,8 @@
 [package]
 name = "daily_draw"
 version = "0.1.0"
-description = "Free nightly draw for Seeker owners: pick 5 of 85, Switchboard picks the winners"
+license = "BUSL-1.1"
+description = "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, Switchboard picks the winners"
 edition = "2021"
 
 [lib]

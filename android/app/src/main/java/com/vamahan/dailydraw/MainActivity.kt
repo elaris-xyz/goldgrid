@@ -712,6 +712,7 @@ private fun SettingsPage(s: UiState, vm: DrawViewModel, onBack: () -> Unit, onIn
     }
     SettingsCard("About") {
         Text("Goldgrid ${BuildConfig.VERSION_NAME} · Solana devnet", color = Muted, fontSize = 13.sp)
+        Text("© 2026 The Goldgrid authors · source-available under BUSL 1.1", color = Muted, fontSize = 12.sp)
         listOf(
             "Goldgrid website ↗" to "https://elaris-xyz.github.io/goldgrid/",
             "The program on Solana Explorer ↗" to "https://explorer.solana.com/address/${DrawProgram.PROGRAM_ID.base58()}?cluster=devnet",

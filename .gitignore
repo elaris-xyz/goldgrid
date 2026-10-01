@@ -21,3 +21,4 @@ android/app/build/
 
 # the crank's reusable Switchboard randomness account
 cli/.randomness-*.json
+dist/

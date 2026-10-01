@@ -137,3 +137,13 @@ deposit; the app reveals the winning balls and a notification says what happened
 - [x] Site: https://elaris-xyz.github.io/goldgrid/
 - [x] Signed release APK (1.0.0) for judges
 - [ ] Mainnet: SGT gating live, a sponsored SKR pot
+
+## License
+
+© 2026 The Goldgrid authors. Goldgrid is **source-available** under the
+[Business Source License 1.1](LICENSE): anyone may read, build, test, audit and
+evaluate it (judging included), and modify it for non-production use. Running it,
+or a derivative, in production needs the authors' permission; the one exception
+is the draw crank, which anyone may run for the Goldgrid program. On 2030-10-01
+the code becomes GPL-2.0-or-later. The Goldgrid name and logo are not licensed.
+

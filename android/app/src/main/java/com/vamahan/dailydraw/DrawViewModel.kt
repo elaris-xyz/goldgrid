@@ -630,8 +630,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         /** The crank needs a minute or two after draw time: commit, oracle reveal, scoring. */
         const val RESULT_SLACK_MS = 120_000L
         const val AIRDROP_LAMPORTS = 500_000_000L
-        /** Rounds whose tickets each poll reads: 16 minutes of demo rounds, 8 nights of real
-         * ones. Older results come from the device's memory. */
+        /** Rounds whose tickets each poll reads: the last 40 minutes of five-minute rounds.
+         * Older tickets are checked separately and their results come from the device's memory. */
         const val WATCHED_ROUNDS = 8L
         const val MAX_CLOSES_PER_TX = 8
         /** The wallet said no without saying why: most often a wallet still on mainnet. */
