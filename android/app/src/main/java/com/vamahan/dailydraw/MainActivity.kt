@@ -234,6 +234,7 @@ fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
                 Results(s, now, onClaim = { vm.claim(sender, it) }, onCollect = { vm.collect(sender) },
                     onRevealed = vm::revealed, onSeeAll = { showActivity = true })
                 HowItWorks()
+                WhySkr()
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -776,6 +777,7 @@ private fun ActivityPage(
         )
     }
     Results(s, now, onClaim, onCollect, onRevealed, onSeeAll = null, limit = Int.MAX_VALUE)
+    WhySkr()
 }
 
 @Composable
@@ -793,6 +795,44 @@ private fun HowItWorks() {
             "Entry is free. Each ticket holds a small SOL deposit that comes back to you right after the draw.",
             "This demo runs on Solana devnet with a round every five minutes; prizes are test SKR.",
         ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
+    }
+}
+
+/** Why the prize is SKR and what that makes possible; folded, so it costs one line until asked. */
+@Composable
+private fun WhySkr() {
+    var open by rememberSaveable { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card)
+            .clickable { open = !open }.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Why prizes are in SKR", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(if (open) "▴" else "▾", color = Gold, fontSize = 16.sp)
+        }
+        if (!open) {
+            Text("SKR is the Seeker community's own token. Tap to see why we chose it and what it makes possible.", color = Muted, fontSize = 13.sp)
+            return@Column
+        }
+        listOf(
+            "It's the Seeker's own token, so prizes stay with the community that plays instead of arriving in a coin nobody here uses.",
+            "SKR only ever flows out to winners. You never pay SKR, or anything else, to enter: Goldgrid stays a free draw, not a bet.",
+            "Sponsors put the SKR into the program's vault before anyone plays, so the money behind every prize is on-chain and visible.",
+            "A prize is a token transfer straight to your wallet, provable on Solana Explorer.",
+        ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
+        Text("What it makes possible next", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+        listOf(
+            "Sponsored rounds: a dApp or brand funds a pot and its name sits on that round.",
+            "Featured draws: a bigger pot for a launch day or a weekend.",
+            "Partner prizes: a sponsor's own token paid alongside SKR.",
+            "Seeker-only rounds where every ticket is tied to a Seeker Genesis Token.",
+            "Streak rewards: playing round after round earns extra SKR, not just extra tickets.",
+        ).forEach { Text("• $it", color = Muted, fontSize = 13.sp) }
+        Text(
+            "On devnet the prize is Test SKR (devnet), a stand-in with no value. On mainnet the same program is set up with the real SKR mint.",
+            color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 

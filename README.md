@@ -52,6 +52,26 @@ The app runs on **Solana devnet**; nothing here costs real money.
 With one player every ticket that matches anything wins the round's pot, so a
 solo judge wins often; with more players it becomes a race for the best match.
 
+## Why SKR
+
+Prizes are paid in SKR, the token of the Solana Seeker community, and SKR only
+ever flows out: no token is taken to enter.
+
+- **It belongs to the players.** Seeker owners already hold SKR, so a prize stays
+  in the community that plays.
+- **The money is visible first.** Sponsors `fund` the program's vault before anyone
+  plays; every prize is backed by tokens on-chain.
+- **Any mint works.** The prize mint is set once at `initialize`, and the program
+  uses the token interface, so SPL Token and Token-2022 mints both work. On devnet
+  it is a stand-in, *Test SKR (devnet)* (`GNafN4xs8TRPxKCNzUwhX9rwsVvNdCY5dbjW74yyG9r8`),
+  with no value; its name and logo come from Metaplex metadata written by
+  [`cli/token-metadata.mjs`](cli/token-metadata.mjs). Mainnet uses the real SKR mint.
+
+What it makes possible next: sponsored rounds carrying the sponsor's name,
+featured draws with a bigger pot, a sponsor's own token paid alongside SKR,
+Seeker-only rounds (SGT gating is already in the program), and streak rewards
+paid in SKR.
+
 ## Layout
 
 | Path | What |
@@ -60,7 +80,7 @@ solo judge wins often; with more players it becomes a race for the best match.
 | `cli/` | Devnet end-to-end test (`e2e-devnet.mjs`), the draw crank (`crank.mjs`), admin scripts, shared client (`lib.mjs`) |
 | `android/` | The app: Kotlin + Compose, Mobile Wallet Adapter |
 | `.github/workflows/crank.yml` | Runs the draw crank on GitHub Actions |
-| `docs/` | The site, served by GitHub Pages |
+| `docs/` | The site and the test token's logo and metadata (`docs/token/`), served by GitHub Pages |
 | `brand/` | The Goldgrid icon |
 | `spikes/` | The Switchboard-on-devnet spike that validated the approach |
 | `scripts/` | Toolchain and build helpers (WSL) |

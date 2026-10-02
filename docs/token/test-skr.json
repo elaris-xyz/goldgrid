@@ -1,0 +1,11 @@
+{
+  "name": "Test SKR (devnet)",
+  "symbol": "SKR",
+  "description": "A devnet test token standing in for SKR in the Goldgrid demo. It has no value and exists only on Solana devnet. Goldgrid pays prizes in it automatically; entry is always free. https://elaris-xyz.github.io/goldgrid/#skr",
+  "image": "https://elaris-xyz.github.io/goldgrid/token/test-skr.png",
+  "external_url": "https://elaris-xyz.github.io/goldgrid/#skr",
+  "properties": {
+    "files": [{ "uri": "https://elaris-xyz.github.io/goldgrid/token/test-skr.png", "type": "image/png" }],
+    "category": "image"
+  }
+}
