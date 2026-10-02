@@ -2,9 +2,12 @@
 # computer to be on. The draw is permissionless: this is one cranker, and anyone
 # can run `node cli/crank.mjs` beside it.
 #
-# One job cranks for 5 h 45 min (inside the 6 h job limit). The hourly schedule
-# keeps one run queued behind it in the concurrency group, so a new job takes
-# over as soon as the last one ends.
+# One job cranks for 5 h 45 min (inside the 6 h job limit). Each job first
+# queues its own successor, which the concurrency group holds until this job
+# ends, so the chain never depends on the schedule: GitHub delays or skips cron
+# runs, and on a new repository it ran none for hours. A workflow_dispatch from
+# the job's own token is one of the two events such a token may start. The
+# hourly schedule stays as a backup that restarts a broken chain.
 #
 # Repository secrets: CRANK_SECRET (the fee-only crank key), RANDOMNESS_SECRET
 # (its Switchboard randomness account) and RPC_URL (a devnet RPC endpoint).
@@ -17,6 +20,9 @@ on:
 concurrency:
   group: draw-crank
   cancel-in-progress: false
+permissions:
+  contents: read
+  actions: write
 jobs:
   crank:
     runs-on: ubuntu-latest
@@ -26,6 +32,9 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@v4
+      - run: gh workflow run crank.yml --ref "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
