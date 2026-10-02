@@ -5,6 +5,9 @@
 # One job cranks for 5 h 45 min (inside the 6 h job limit). The hourly schedule
 # keeps one run queued behind it in the concurrency group, so a new job takes
 # over as soon as the last one ends.
+#
+# Repository secrets: CRANK_SECRET (the fee-only crank key), RANDOMNESS_SECRET
+# (its Switchboard randomness account) and RPC_URL (a devnet RPC endpoint).
 name: draw-crank
 run-name: draw crank
 on:
