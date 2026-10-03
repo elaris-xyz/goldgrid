@@ -50,8 +50,10 @@ The app runs on **Solana devnet**; nothing here costs real money.
    itself — there is nothing to claim. *Verify this draw on Solana Explorer* shows
    the Switchboard commit and reveal behind every result.
 
-With one player every ticket that matches anything wins the round's pot, so a
-solo judge wins often; with more players it becomes a race for the best match.
+With one player every ticket that matches anything wins the round's pot. A
+ticket matches at least one number 26.7% of the time, so a solo judge wins about
+one round in four; with ten players 95.5% of rounds have a winner, and it becomes
+a race for the best match.
 
 ## Why SKR
 
