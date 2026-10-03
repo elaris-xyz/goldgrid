@@ -1,7 +1,8 @@
 # Goldgrid — pick five, strike gold
 
 A free number draw for Solana Seeker owners, built for **Clock In**, the Solana
-Mobile hackathon. Site: https://elaris-xyz.github.io/goldgrid/
+Mobile hackathon. Site: https://elaris-xyz.github.io/goldgrid/ ·
+[Pitch deck (PDF)](docs/goldgrid-pitch-deck.pdf)
 
 A new round every five minutes: pick 5 numbers from 1 to 85, and when the timer
 ends Switchboard randomness draws the winning five. The tickets with the most
