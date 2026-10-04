@@ -158,7 +158,7 @@ deposit; the app reveals the winning balls and a notification says what happened
 - [x] Android app on a real device with Phantom: entry, results, automatic payout,
       notifications, settings
 - [x] Site: https://elaris-xyz.github.io/goldgrid/
-- [x] Signed release APK (1.0.0) for judges
+- [x] Signed release APK (1.0.1) for judges
 - [ ] Mainnet: SGT gating live, a sponsored SKR pot
 
 ## License
