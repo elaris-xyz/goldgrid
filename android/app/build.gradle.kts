@@ -14,8 +14,8 @@ android {
         applicationId = "com.vamahan.dailydraw"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.0.1"
+        versionCode = 4
+        versionName = "1.0.2"
         // A keyed RPC (Helius) lives in local.properties as rpc.url, never in the repo;
         // without one the app falls back to the public devnet endpoint.
         buildConfigField("String", "RPC_URL", "\"${localRpcUrl()}\"")

@@ -541,16 +541,23 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
                 if (r.drawTs > 0) Text(when_(r.drawTs), color = Muted, fontSize = 12.sp)
             }
             val drawIn = (if (r.drawTs > 0) r.drawTs else s.config?.drawTs(r.round) ?: now) - now
+            // A cached Waiting goes stale the moment the draw time passes; and a draw
+            // that takes minutes means the randomness network is slow, which the
+            // player should hear about instead of watching a spinner forever.
+            val drawing = r.outcome == Outcome.Drawing || (r.outcome == Outcome.Waiting && drawIn <= 0)
             val (label, color) = when (r.outcome) {
-                Outcome.Waiting -> "Draw in ${clock(drawIn.coerceAtLeast(0))}" to Muted
-                Outcome.Drawing -> "Drawing the numbers…" to Gold
+                Outcome.Waiting, Outcome.Drawing -> when {
+                    !drawing -> "Draw in ${clock(drawIn)}" to Muted
+                    -drawIn > DRAW_DELAYED_SECS -> "Draw delayed · your ticket is safe" to Amber
+                    else -> "Drawing the numbers…" to Gold
+                }
                 Outcome.NoMatch -> "No match this time" to Muted
                 Outcome.Matched -> "${r.matches} matched · the winner had ${r.best}" to Muted
                 Outcome.Won -> "You won ${formatSkr(r.prize)} SKR!" to Win
                 Outcome.Claimed -> "Won ${formatSkr(r.prize)} SKR · paid to your wallet ✓" to Win
             }
-            if (r.outcome == Outcome.Drawing) {
-                CircularProgressIndicator(Modifier.size(14.dp), color = Gold, strokeWidth = 2.dp)
+            if (drawing) {
+                CircularProgressIndicator(Modifier.size(14.dp), color = color, strokeWidth = 2.dp)
                 Spacer(Modifier.width(6.dp))
             }
             Text(label, color = color, fontSize = 13.sp, fontWeight = if (won) FontWeight.Bold else FontWeight.Normal)
@@ -583,7 +590,7 @@ private fun ResultCard(r: MyResult, now: Long, s: UiState, pending: Boolean, fre
 
 /**
  * The draw's receipts: the round account's history on Solana Explorer holds the
- * Switchboard commit made after entries closed, the reveal, and the scoring.
+ * randomness request committed after entries closed, the reveal, and the scoring.
  * Anyone can check that the numbers came from that commit and nowhere else.
  */
 @Composable
@@ -790,7 +797,7 @@ private fun HowItWorks() {
         listOf(
             "Pick 5 numbers from 1 to 85. One free ticket per round — per Seeker Genesis Token on mainnet.",
             "Play round after round: every 7 rounds in a row adds a ticket, up to 5.",
-            "The numbers come from Switchboard randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
+            "The numbers come from ORAO VRF randomness on-chain. Nobody can pick them, including us — every draw links to its proof on Solana Explorer.",
             "The best match wins the pot and ties split it; the prize goes straight to the winner's wallet. No match? The pot rolls over.",
             "Entry is free. Each ticket holds a small SOL deposit that comes back to you right after the draw.",
             "This demo runs on Solana devnet with a round every five minutes; prizes are test SKR.",
@@ -835,6 +842,9 @@ private fun WhySkr() {
         )
     }
 }
+
+/** After this long past its draw time, a draw that has not landed is shown as delayed. */
+private const val DRAW_DELAYED_SECS = 180L
 
 private fun clock(secs: Long) = "%02d:%02d".format(secs / 60, secs % 60)
 

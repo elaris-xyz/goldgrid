@@ -4,7 +4,7 @@
     "name": "daily_draw",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, Switchboard picks the winners"
+    "description": "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, ORAO VRF picks the winners"
   },
   "instructions": [
     {
@@ -235,10 +235,14 @@
     {
       "name": "commit_draw",
       "docs": [
-        "Binds the round to a Switchboard randomness account committed in this",
-        "same transaction, after entries closed: nobody could know the result",
-        "while they could still enter. Anyone may call it. The seed slot is kept so",
-        "the reveal must be of this very commitment (see reveal_draw)."
+        "Binds the round to an ORAO VRF request made after entries closed, in the",
+        "same transaction as the request: the request must still be pending with no",
+        "oracle response yet, so nobody can know the result at commit time. Anyone",
+        "may call it. The reveal must use this very request (see reveal_draw).",
+        "",
+        "Re-committing a committed round needs the timeout AND the old request, as",
+        "the first remaining account, still unfulfilled: an outage may be routed",
+        "around, a result that is merely unwelcome may not."
       ],
       "discriminator": [
         210,
@@ -594,11 +598,10 @@
     {
       "name": "reveal_draw",
       "docs": [
-        "Reads the revealed value in the same transaction as Switchboard's reveal",
-        "and turns it into the winning numbers. Anyone may call it. The value must",
-        "come from the commitment made at commit_draw: without the seed-slot check,",
-        "whoever cranks could reveal privately, re-commit the same account, and",
-        "repeat until the numbers favour their own ticket."
+        "Turns the committed request's fulfilled randomness into the winning",
+        "numbers. Anyone may call it, as soon as ORAO has fulfilled the request.",
+        "Only the request bound at commit_draw is accepted, and it cannot be",
+        "replaced once fulfilled, so whoever cranks cannot re-roll."
       ],
       "discriminator": [
         13,
@@ -997,17 +1000,17 @@
     {
       "code": 6011,
       "name": "BadRandomness",
-      "msg": "Randomness account is not the expected Switchboard account"
+      "msg": "Randomness account is not the expected ORAO VRF request"
     },
     {
       "code": 6012,
       "name": "StaleCommit",
-      "msg": "Randomness must be committed in the same transaction"
+      "msg": "The randomness request must be new and unanswered when committed"
     },
     {
       "code": 6013,
       "name": "NotRevealed",
-      "msg": "Randomness is not revealed in this slot"
+      "msg": "The randomness is not fulfilled yet"
     },
     {
       "code": 6014,
@@ -1058,6 +1061,11 @@
       "code": 6023,
       "name": "NotAdmin",
       "msg": "Only the admin can change the schedule"
+    },
+    {
+      "code": 6024,
+      "name": "RandomnessReady",
+      "msg": "The committed randomness is fulfilled: reveal it instead"
     }
   ],
   "types": [
@@ -1131,6 +1139,9 @@
           },
           {
             "name": "sb_program",
+            "docs": [
+              "Legacy (Switchboard). Unused since randomness moved to ORAO VRF; kept for the account layout."
+            ],
             "type": "pubkey"
           },
           {
@@ -1273,6 +1284,9 @@
           },
           {
             "name": "sb_program",
+            "docs": [
+              "Legacy (Switchboard): stored but no longer read; randomness comes from ORAO VRF."
+            ],
             "type": "pubkey"
           },
           {

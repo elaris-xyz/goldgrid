@@ -3,18 +3,20 @@
 // on-chain, so this is the same work the app does when it finds a round
 // waiting to be drawn.
 import anchor from "@coral-xyz/anchor";
-import * as sb from "@switchboard-xyz/on-demand";
 import {
   ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
   SYSVAR_CLOCK_PUBKEY,
+  SystemProgram,
   Transaction,
+  TransactionInstruction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import fs from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 
 const { AnchorProvider, BN, Program, Wallet } = anchor;
 
@@ -110,7 +112,16 @@ export async function chainNow(connection) {
 /** Sleeps until the chain clock reaches `unix` (plus a small margin). */
 export async function sleepUntilChain(connection, unix, marginSecs = 2) {
   for (;;) {
-    const left = unix + marginSecs - (await chainNow(connection));
+    // A VPN or RPC hiccup must not end a wait that has minutes left.
+    let now;
+    try {
+      now = await chainNow(connection);
+    } catch (e) {
+      log(`clock read failed (${(e.message ?? e).toString().slice(0, 60)}); retrying`);
+      await new Promise((r) => setTimeout(r, 5000));
+      continue;
+    }
+    const left = unix + marginSecs - now;
     if (left <= 0) return;
     log(`waiting ${left}s (chain time)`);
     await new Promise((r) => setTimeout(r, Math.min(left, 20) * 1000));
@@ -122,93 +133,72 @@ export async function ticketsOf(program, id) {
   return program.account.ticket.all([{ memcmp: { offset: 8, bytes: anchor.utils.bytes.bs58.encode(u64le(id)) } }]);
 }
 
-export async function switchboardProgram() {
-  return (await sb.getDefaultDevnetQueue(RPC)).program;
+/**
+ * ORAO VRF supplies the randomness. It replaced Switchboard, which shut down in
+ * September 2026; its devnet oracles went silent on 2026-10-10 and every draw
+ * stalled. A request is one instruction and a fee (0.0003 SOL on devnet); ORAO's
+ * oracles fulfil it within seconds, and the result stays in the request account.
+ */
+export const ORAO_VRF = new PublicKey("VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y");
+const ORAO_NETWORK = PublicKey.findProgramAddressSync([Buffer.from("orao-vrf-network-configuration")], ORAO_VRF)[0];
+export const oraoRequestPda = (seed) =>
+  PublicKey.findProgramAddressSync([Buffer.from("orao-vrf-randomness-request"), seed], ORAO_VRF)[0];
+const anchorDisc = (name) => createHash("sha256").update(name).digest().subarray(0, 8);
+
+/** ORAO's request_v2: pays the fee to the network treasury and opens the request account. */
+export async function oraoRequestIx(connection, payer, seed) {
+  const net = await connection.getAccountInfo(ORAO_NETWORK);
+  if (!net) throw new Error("ORAO VRF network account not found");
+  // NetworkState: discriminator, then config { authority, treasury, ... }.
+  const treasury = new PublicKey(net.data.subarray(8 + 32, 8 + 64));
+  return new TransactionInstruction({
+    programId: ORAO_VRF,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: ORAO_NETWORK, isSigner: false, isWritable: true },
+      { pubkey: treasury, isSigner: false, isWritable: true },
+      { pubkey: oraoRequestPda(seed), isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([anchorDisc("global:request_v2"), seed]),
+  });
+}
+
+/** A request's state: RandomnessV2 = discriminator, then the enum tag (0 pending, 1 fulfilled). */
+export async function oraoState(connection, request) {
+  const info = await connection.getAccountInfo(request);
+  if (!info) return { exists: false, fulfilled: false };
+  const fulfilled = info.data[8] === 1;
+  // Fulfilled { client, seed, randomness[64] }
+  const randomness = fulfilled ? info.data.subarray(9 + 32 + 32, 9 + 32 + 32 + 64) : null;
+  return { exists: true, fulfilled, randomness };
 }
 
 /**
- * Whether the queue has an oracle that can serve randomness now, read from chain:
- * an oracle counts only while its last heartbeat is within the queue's node
- * timeout. With none, a commit can never be revealed, so the crank must wait
- * instead of spending. On 2026-10-10 every devnet oracle went silent for hours
- * and the crank paid for a fresh randomness account every 40 s until it was empty.
+ * A fresh ORAO request and our commit_draw in one transaction, so the request is
+ * still unanswered when the program checks it. `previous` is the round's old,
+ * still-unfulfilled request when re-committing after the timeout.
  */
-export async function oracleHealth(program, sbProgram) {
-  const config = await program.account.config.fetch(configPda());
-  const q = await new sb.Queue(sbProgram, config.sbQueue).loadData();
-  const now = await chainNow(program.provider.connection);
-  const keys = q.oracleKeys.slice(0, q.oracleKeysLen).filter((k) => !k.equals(PublicKey.default));
-  let live = 0;
-  let freshest = Infinity;
-  for (const key of keys) {
-    try {
-      const o = await new sb.Oracle(sbProgram, key).loadData();
-      const age = now - Number(o.lastHeartbeat);
-      freshest = Math.min(freshest, age);
-      if (age <= Number(q.nodeTimeout)) live++;
-    } catch {
-      // An unreadable oracle cannot serve a draw either.
-    }
-  }
-  return { live, oracles: keys.length, freshestHeartbeatSecs: freshest };
+export async function commitRound(program, payer, id, { previous = null } = {}) {
+  const connection = program.provider.connection;
+  const seed = randomBytes(32);
+  const request = await oraoRequestIx(connection, payer.publicKey, seed);
+  let ours = program.methods.commitDraw(new BN(id)).accountsPartial({ randomness: oraoRequestPda(seed) });
+  if (previous) ours = ours.remainingAccounts([{ pubkey: previous, isSigner: false, isWritable: false }]);
+  return send(connection, [request, await ours.instruction()], [payer], `round ${id}: commit (ORAO request)`);
 }
 
-/** At most one fresh randomness account per crank process, reused on every later pass. */
-let freshRandomness = null;
-
-/**
- * The cranker's randomness account, created once and re-committed every round:
- * a new account per draw leaks its rent every time. Kept in a local keypair
- * file; `fresh` makes a new one when Switchboard refuses to re-commit the old.
- */
-export async function crankerRandomness(program, payer, sbProgram, { fresh = false } = {}) {
-  // One randomness account per payer: its authority is whoever created it, so the
-  // crank's and the admin's (the e2e test's) must never be the same file.
-  const file = new URL(`./.randomness-${payer.publicKey.toBase58().slice(0, 8)}.json`, import.meta.url);
-  const config = await program.account.config.fetch(configPda());
-  // In CI there is no file to keep it in: the keypair comes from a secret.
-  const fromEnv = process.env.RANDOMNESS_SECRET;
-  // A fresh account made earlier in this process is reused, never replaced: in CI
-  // the secret always names the original account, so without this every pass
-  // would buy another one.
-  if (fresh && freshRandomness) return { kp: freshRandomness, randomness: new sb.Randomness(sbProgram, freshRandomness.publicKey) };
-  let kp = fresh ? null : (freshRandomness ?? (fromEnv ? keypairFromJson(fromEnv) : fs.existsSync(file) ? loadKeypair(file) : null));
-  if (kp && (await program.provider.connection.getAccountInfo(kp.publicKey))) {
-    return { kp, randomness: new sb.Randomness(sbProgram, kp.publicKey) };
+/** Our reveal_draw once ORAO has fulfilled the request; waits up to `waitSecs` for it. */
+export async function revealRound(program, payer, id, request, waitSecs = 60) {
+  const connection = program.provider.connection;
+  for (let waited = 0; ; waited += 3) {
+    const state = await oraoState(connection, request);
+    if (state.fulfilled) break;
+    if (waited >= waitSecs) return null;
+    await new Promise((r) => setTimeout(r, 3000));
   }
-  kp = kp && !fresh ? kp : Keypair.generate();
-  const [randomness, createIx] = await sb.Randomness.create(sbProgram, kp, config.sbQueue, payer.publicKey);
-  await send(program.provider.connection, [createIx], [payer, kp], "randomness account created");
-  if (fresh) freshRandomness = kp;
-  if (!fromEnv || fresh) fs.writeFileSync(file, JSON.stringify([...kp.secretKey]));
-  return { kp, randomness };
-}
-
-/** Switchboard commit and our commit_draw in one transaction. */
-export async function commitRound(program, payer, id, { fresh = false } = {}) {
-  const sbProgram = await switchboardProgram();
-  const config = await program.account.config.fetch(configPda());
-  const { kp, randomness } = await crankerRandomness(program, payer, sbProgram, { fresh });
-  const commitIx = await randomness.commitIx(config.sbQueue, payer.publicKey);
-  const ours = await program.methods.commitDraw(new BN(id)).accountsPartial({ randomness: kp.publicKey }).instruction();
-  return send(program.provider.connection, [commitIx, ours], [payer], `round ${id}: commit`);
-}
-
-/** Switchboard reveal and our reveal_draw in one transaction, with retries for the oracle. */
-export async function revealRound(program, payer, id, randomnessKey, attempts = 8) {
-  const sbProgram = await switchboardProgram();
-  const randomness = new sb.Randomness(sbProgram, randomnessKey);
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const revealIx = await randomness.revealIx(payer.publicKey);
-      const ours = await program.methods.revealDraw(new BN(id)).accountsPartial({ randomness: randomnessKey }).instruction();
-      return await send(program.provider.connection, [revealIx, ours], [payer], `round ${id}: reveal (attempt ${attempt})`);
-    } catch (e) {
-      if (attempt >= attempts) throw e;
-      log(`reveal attempt ${attempt} failed: ${(e.message ?? e).toString().slice(0, 160)}`);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
+  const ours = await program.methods.revealDraw(new BN(id)).accountsPartial({ randomness: request }).instruction();
+  return send(connection, [ours], [payer], `round ${id}: reveal`);
 }
 
 /**
@@ -255,41 +245,28 @@ export async function payoutRound(program, payer, id, round) {
   return program.account.round.fetch(roundPda(id));
 }
 
-export async function crankRound(program, payer, id, { payout = true, keepSecs = ROUND_KEEP_SECS, health = null } = {}) {
+export async function crankRound(program, payer, id, { payout = true, keepSecs = ROUND_KEEP_SECS } = {}) {
   const connection = program.provider.connection;
   let round = await program.account.round.fetch(roundPda(id));
 
-  // No live oracle: a commit could never be revealed, so nothing is spent until one is back.
-  if (health && health.live === 0 && ("open" in round.status || "committed" in round.status)) {
-    return round;
-  }
-
   if ("open" in round.status) {
-    try {
-      await commitRound(program, payer, id);
-    } catch (e) {
-      log(`commit with the reused randomness account failed (${(e.message ?? e).toString().slice(0, 100)}); using a fresh one`);
-      await commitRound(program, payer, id, { fresh: true });
-    }
+    await commitRound(program, payer, id);
     round = await program.account.round.fetch(roundPda(id));
   }
 
   if ("committed" in round.status) {
-    const sbProgram = await switchboardProgram();
-    const data = await new sb.Randomness(sbProgram, round.randomness).loadData();
-    const revealable = data.seedSlot.toString() === round.commitSlot.toString();
-    if (revealable) {
-      await revealRound(program, payer, id, round.randomness);
-    } else {
+    const revealed = await revealRound(program, payer, id, round.randomness);
+    if (!revealed) {
+      // Unanswered: after the timeout a new request may replace it (the program
+      // checks the old one is still unfulfilled); before it, wait.
       const slot = await connection.getSlot("confirmed");
       const readyAt = round.commitSlot.toNumber() + REVEAL_TIMEOUT_SLOTS + 1;
       if (slot < readyAt) {
-        log(`round ${id}: its randomness was re-committed; fresh commit allowed in ${readyAt - slot} slots`);
+        log(`round ${id}: waiting for ORAO to fulfil its request; a new request is allowed in ${readyAt - slot} slots`);
         return round;
       }
-      await commitRound(program, payer, id, { fresh: true });
-      round = await program.account.round.fetch(roundPda(id));
-      await revealRound(program, payer, id, round.randomness);
+      await commitRound(program, payer, id, { previous: round.randomness });
+      return program.account.round.fetch(roundPda(id));
     }
     round = await program.account.round.fetch(roundPda(id));
   }

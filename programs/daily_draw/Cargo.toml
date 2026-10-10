@@ -2,7 +2,7 @@
 name = "daily_draw"
 version = "0.1.0"
 license = "BUSL-1.1"
-description = "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, Switchboard picks the winners"
+description = "Goldgrid: a free number draw for Seeker owners, pick 5 of 85, ORAO VRF picks the winners"
 edition = "2021"
 
 [lib]
@@ -23,7 +23,9 @@ custom-panic = []
 [dependencies]
 anchor-lang = { version = "0.32.2", features = ["init-if-needed"] }
 anchor-spl = { version = "0.32.2", default-features = false, features = ["token", "token_2022"] }
-switchboard-on-demand = "0.13.0"
+# ORAO VRF replaced Switchboard, which shut down in September 2026 (its devnet
+# oracles went silent on 2026-10-10). Only its account types are used: no CPI.
+orao-solana-vrf = { version = "0.7.0", default-features = false, features = ["cpi"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

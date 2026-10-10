@@ -17,7 +17,7 @@ pub fn normalize_picks(mut picks: [u8; PICKS]) -> Option<[u8; PICKS]> {
     (in_range && distinct).then_some(picks)
 }
 
-/// Five distinct winning numbers from 32 random bytes: a partial Fisher-Yates
+/// Five distinct winning numbers from 32 random bytes (the first half of ORAO VRF's 64): a partial Fisher-Yates
 /// shuffle of 1..=85, two bytes per draw so the modulo bias stays under 0.2%.
 /// Must stay identical to `drawFive` in spikes/switchboard-devnet/spike.mjs.
 pub fn draw_five(value: &[u8; 32]) -> [u8; PICKS] {

@@ -1,10 +1,9 @@
-// End-to-end on devnet, against the deployed program and the real Switchboard
+// End-to-end on devnet, against the deployed program and the real ORAO VRF
 // oracle: set up (once), fund a pot, enter tickets from three players, check the
-// rules that must refuse, attempt the re-roll attack, run the draw, pay the
+// rules that must refuse, run the draw, pay the
 // winners, and return every ticket's rent. Exits non-zero on any mismatch, so a
 // green run means a whole round works, not just a unit.
 import anchor from "@coral-xyz/anchor";
-import * as sb from "@switchboard-xyz/on-demand";
 import { createMint, getAccount, getOrCreateAssociatedTokenAccount, mintTo, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Keypair, LAMPORTS_PER_SOL, SystemProgram } from "@solana/web3.js";
 import fs from "node:fs";
@@ -13,10 +12,10 @@ import {
   commitRound,
   configPda,
   connect,
-  crankerRandomness,
   crankRound,
   currentRound,
   loadKeypair,
+  ORAO_VRF,
   log,
   programDataPda,
   REVEAL_TIMEOUT_SLOTS,
@@ -25,7 +24,6 @@ import {
   send,
   SGT_GROUP,
   sleepUntilChain,
-  switchboardProgram,
   ticketPda,
   ticketsOf,
   vaultPda,
@@ -35,7 +33,6 @@ const { BN } = anchor;
 const ADMIN_PATH = process.env.ADMIN_KEYPAIR ?? new URL("../spikes/switchboard-devnet/payer.json", import.meta.url);
 const STATE = new URL("./devnet-state.json", import.meta.url);
 const SKR = 10 ** 6; // test token has 6 decimals
-const skipAttack = process.argv.includes("--skip-attack");
 
 const admin = loadKeypair(ADMIN_PATH);
 const { connection, program } = connect(admin);
@@ -75,7 +72,6 @@ const adminTokens = await getOrCreateAssociatedTokenAccount(connection, admin, m
 
 let config = await program.account.config.fetchNullable(configPda());
 if (!config) {
-  const queue = await sb.getDefaultDevnetQueue();
   const params = {
     genesisTs: new BN(Math.floor((await chainNow(connection)) / 60) * 60),
     roundSecs: new BN(120),
@@ -83,8 +79,9 @@ if (!config) {
     perTicketBonus: new BN(1 * SKR),
     requireSgt: false,
     sgtGroup: SGT_GROUP,
-    sbProgram: queue.program.programId,
-    sbQueue: queue.pubkey,
+    // Legacy Switchboard fields: stored, never read since the move to ORAO VRF.
+    sbProgram: ORAO_VRF,
+    sbQueue: ORAO_VRF,
   };
   const init = (signer) =>
     program.methods
@@ -157,39 +154,8 @@ await sleepUntil(roundTimes(config, id).close);
 await expectError(enter(latecomer, [7, 8, 9, 11, 12]), "EntriesClosed", "a new player entering after close is refused");
 await sleepUntil(roundTimes(config, id).draw);
 
-// 5. The re-roll attack: commit, peek at the value, re-commit the same account,
-//    then reveal with our instruction. The program must refuse the new value.
-if (!skipAttack) {
-  await commitRound(program, admin, id);
-  round = await program.account.round.fetch(roundPda(id));
-  const sbProgram = await switchboardProgram();
-  const { randomness } = await crankerRandomness(program, admin, sbProgram);
-  const peek = await randomness.revealIx(admin.publicKey);
-  await send(connection, [peek], [admin], "attacker reveals privately (without reveal_draw)");
-  let recommitted = false;
-  try {
-    await send(connection, [await randomness.commitIx(config.sbQueue, admin.publicKey)], [admin], "attacker re-commits the same account");
-    recommitted = true;
-  } catch (e) {
-    log(`Switchboard refused the re-commit (${(e.message ?? e).toString().slice(0, 80)})`);
-  }
-  if (recommitted) {
-    const ours = await program.methods.revealDraw(new BN(id)).accountsPartial({ randomness: round.randomness }).instruction();
-    await expectError(
-      (async () => send(connection, [await randomness.revealIx(admin.publicKey), ours], [admin], "attacker reveals the re-rolled value"))(),
-      "RandomnessExpired",
-      "a re-rolled value is refused"
-    );
-    // The committed value can no longer be revealed; the round must recover
-    // with fresh randomness once the reveal timeout has passed.
-    await expectError(commitRound(program, admin, id, { fresh: true }), "RevealPending", "a fresh commit before the timeout is refused");
-    const waitFor = round.commitSlot.toNumber() + REVEAL_TIMEOUT_SLOTS + 1;
-    while ((await connection.getSlot("confirmed")) < waitFor) {
-      log(`waiting for the reveal timeout (${waitFor - (await connection.getSlot("confirmed"))} slots)`);
-      await new Promise((r) => setTimeout(r, 15000));
-    }
-  }
-}
+// 5. The re-roll and request-swap attacks on the ORAO draw are in
+//    orao-security-test.mjs, which needs the reveal timeout and its own round.
 
 // 6. The draw, then scoring, exactly as the app would run it.
 // The crank would pay everyone at once; hold that back to test payouts one by one.

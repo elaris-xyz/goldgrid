@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Goldgrid</title>
-<meta name="description" content="Goldgrid: a free number draw for Solana Seeker owners. Pick five numbers, a new round every five minutes, provably fair Switchboard randomness, prizes paid straight to your wallet.">
+<meta name="description" content="Goldgrid: a free number draw for Solana Seeker owners. Pick five numbers, a new round every five minutes, provably fair on-chain randomness (ORAO VRF), prizes paid straight to your wallet.">
 <link rel="icon" href="favicon.png">
 <meta property="og:title" content="Goldgrid — Pick five. Strike gold.">
 <meta property="og:description" content="A free, provably fair number draw for Solana Seeker owners.">
@@ -194,7 +194,7 @@
     <p class="sub">No sign-ups, no deposits, no odds tables. Connect the wallet on your Seeker and play.</p>
     <div class="steps">
       <div class="step"><div class="n">1</div><h3>Pick five</h3><p>Choose five numbers from 1 to 85 — or shake your phone for a quick pick. Your ticket is free.</p></div>
-      <div class="step"><div class="n">2</div><h3>Watch the draw</h3><p>When the timer ends, Switchboard randomness on Solana draws the winning five. The balls turn over one by one.</p></div>
+      <div class="step"><div class="n">2</div><h3>Watch the draw</h3><p>When the timer ends, ORAO VRF randomness on Solana draws the winning five. The balls turn over one by one.</p></div>
       <div class="step"><div class="n">3</div><h3>Get paid</h3><p>The best match takes the pot, ties split it. The prize lands in your wallet automatically — nothing to claim.</p></div>
     </div>
   </div>
@@ -204,17 +204,17 @@
   <div class="wrap">
     <div class="kicker">Provably fair</div>
     <h2>Nobody picks the numbers. Not even us.</h2>
-    <p class="sub">The draw is a commit–reveal on Switchboard's on-demand randomness, enforced by the Goldgrid program. Every step is a public Solana transaction you can check.</p>
+    <p class="sub">The draw is a commit–reveal on ORAO VRF randomness, enforced by the Goldgrid program. Every step is a public Solana transaction you can check.</p>
     <div class="flow">
       <div class="node"><div class="dot"></div><h4>Entries close</h4><p>Tickets are locked on-chain. Nothing can be added after this point.</p></div>
-      <div class="node"><div class="dot"></div><h4>Commit</h4><p>Randomness is committed only after entries close, from a fresh slot.</p></div>
-      <div class="node"><div class="dot"></div><h4>Reveal</h4><p>The program accepts only the value from that exact commit — a re-roll is refused.</p></div>
+      <div class="node"><div class="dot"></div><h4>Commit</h4><p>A fresh randomness request is committed only after entries close, before anyone can know its answer.</p></div>
+      <div class="node"><div class="dot"></div><h4>Reveal</h4><p>The program accepts only the answer to that exact request — an answered request can never be swapped for another.</p></div>
       <div class="node"><div class="dot"></div><h4>Score &amp; pay</h4><p>Every ticket is scored on-chain, winners are paid, deposits are returned.</p></div>
     </div>
     <div class="proof">
-      <div><span class="k">round 503</span>  Enter → RandomnessCommit + CommitDraw → RandomnessReveal + RevealDraw → ScoreTickets</div>
-      <div><span class="ok">✓</span> a re-rolled value is refused → RandomnessExpired</div>
-      <div><span class="ok">✓</span> a fresh commit before the timeout is refused → RevealPending</div>
+      <div><span class="k">round 3702</span>  Enter → ORAO Request + CommitDraw → ORAO fulfils → RevealDraw → ScoreTickets</div>
+      <div><span class="ok">✓</span> committing a request whose answer is already known is refused → StaleCommit</div>
+      <div><span class="ok">✓</span> re-rolling an answered draw, even after the timeout, is refused → RandomnessReady</div>
       <div><span class="ok">✓</span> every result links to its proof on Solana Explorer, in the app</div>
     </div>
   </div>
@@ -304,7 +304,7 @@
 <footer>
   <div class="wrap">
     <span>© 2026 The Goldgrid authors · Source-available under <a href="https://github.com/elaris-xyz/goldgrid/blob/master/LICENSE">BUSL 1.1</a> · The Goldgrid name and logo are ours. Free to play, no purchase necessary. Devnet demo: prizes are test SKR.</span>
-    <span>Built on Solana · Switchboard · Mobile Wallet Adapter</span>
+    <span>Built on Solana · ORAO VRF · Mobile Wallet Adapter</span>
   </div>
 </footer>
 

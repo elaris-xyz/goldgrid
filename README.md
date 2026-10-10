@@ -5,7 +5,7 @@ Mobile hackathon. Site: https://elaris-xyz.github.io/goldgrid/ ·
 [Pitch deck (PDF)](docs/goldgrid-pitch-deck.pdf)
 
 A new round every five minutes: pick 5 numbers from 1 to 85, and when the timer
-ends Switchboard randomness draws the winning five. The tickets with the most
+ends ORAO VRF randomness draws the winning five. The tickets with the most
 matches split a pot that sponsors fund in SKR. Entry is free, full stop: a paid
 entry would make this a lottery.
 
@@ -48,7 +48,7 @@ The app runs on **Solana devnet**; nothing here costs real money.
 5. **Wait for the draw.** The winning numbers turn over in the app, a
    notification arrives with the result, and a prize is paid into your wallet by
    itself — there is nothing to claim. *Verify this draw on Solana Explorer* shows
-   the Switchboard commit and reveal behind every result.
+   the randomness request and reveal behind every result.
 
 With one player every ticket that matches anything wins the round's pot. A
 ticket matches at least one number 26.7% of the time, so a solo judge wins about
@@ -85,7 +85,7 @@ paid in SKR.
 | `.github/workflows/crank.yml` | Runs the draw crank on GitHub Actions |
 | `docs/` | The site and the test token's logo and metadata (`docs/token/`), served by GitHub Pages |
 | `brand/` | The Goldgrid icon |
-| `spikes/` | The Switchboard-on-devnet spike that validated the approach |
+| `spikes/` | The first randomness spike (Switchboard, since replaced by ORAO VRF) |
 | `scripts/` | Toolchain and build helpers (WSL) |
 
 ## Build and test
@@ -106,9 +106,10 @@ and the program refuses any schedule that would reuse a past round's number.
 ## Who runs the draw
 
 Nobody has to be trusted to run it, and nobody's computer has to be on. Drawing a
-round (Switchboard commit, reveal, scoring, closing) is permissionless: anyone can
-send those transactions, and the program only accepts randomness committed after
-entries closed and revealed from that same commit. `cli/crank.mjs` does it for
+round (randomness request and commit, reveal, scoring, closing) is permissionless:
+anyone can send those transactions, and the program only accepts an ORAO VRF
+request made after entries closed and still unanswered, and reveals only that
+request's result. `cli/crank.mjs` does it for
 every round past its draw time; `.github/workflows/crank.yml` runs it on GitHub
 Actions around the clock with a key that pays fees and holds no authority.
 
@@ -151,9 +152,10 @@ deposit; the app reveals the winning balls and a notification says what happened
 
 ## Status
 
-- [x] Program: enter, commit/reveal with Switchboard, scoring, split, rollover,
+- [x] Program: enter, commit/reveal with ORAO VRF, scoring, split, rollover,
       permissionless payout, rent return, schedule changes that only move forward
-- [x] Devnet end-to-end test (re-roll attack, stranger payouts, rent returns)
+- [x] Devnet end-to-end test (stranger payouts, rent returns) and
+      `cli/orao-security-test.mjs` (re-roll and request-swap attacks, all refused)
 - [x] Hosted crank on GitHub Actions with a fee-only key
 - [x] Android app on a real device with Phantom: entry, results, automatic payout,
       notifications, settings

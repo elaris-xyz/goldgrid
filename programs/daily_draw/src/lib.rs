@@ -1,12 +1,12 @@
 //! Goldgrid: a free number draw for Seeker owners, a round every few minutes
 //! (the admin sets the schedule). Pick 5 of 85 before entries close;
-//! at draw time Switchboard randomness picks the winning numbers and the
+//! at draw time ORAO VRF randomness picks the winning numbers and the
 //! tickets with the most matches split a pot that sponsors fund in SKR.
 //! Nobody ever pays to enter: a payment would make this a lottery.
 
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
-use switchboard_on_demand::accounts::RandomnessAccountData;
+use orao_solana_vrf::state::RandomnessAccountData;
 
 pub mod logic;
 pub mod sgt;
@@ -16,10 +16,10 @@ use logic::*;
 declare_id!("gvd3fv3QgWvTMzLfxN2HBKkspAeVwzGBCZkW9ixaucM");
 
 pub const UNSCORED: u8 = u8::MAX;
-/// A committed draw that nobody revealed for this many slots (~2 minutes) may be
-/// committed again with fresh randomness, so an oracle outage cannot strand a
-/// pot. Anyone can reveal before then, so withholding a bad result gains nothing
-/// while any honest client is running.
+/// A committed draw whose randomness is still unfulfilled this many slots (~2
+/// minutes) later may be committed again with a fresh request, so an oracle
+/// outage cannot strand a pot. A fulfilled request can never be replaced: it can
+/// only be revealed, and anyone may reveal it.
 pub const REVEAL_TIMEOUT_SLOTS: u64 = 300;
 pub const TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
@@ -150,47 +150,63 @@ pub mod daily_draw {
         Ok(())
     }
 
-    /// Binds the round to a Switchboard randomness account committed in this
-    /// same transaction, after entries closed: nobody could know the result
-    /// while they could still enter. Anyone may call it. The seed slot is kept so
-    /// the reveal must be of this very commitment (see reveal_draw).
+    /// Binds the round to an ORAO VRF request made after entries closed, in the
+    /// same transaction as the request: the request must still be pending with no
+    /// oracle response yet, so nobody can know the result at commit time. Anyone
+    /// may call it. The reveal must use this very request (see reveal_draw).
+    ///
+    /// Re-committing a committed round needs the timeout AND the old request, as
+    /// the first remaining account, still unfulfilled: an outage may be routed
+    /// around, a result that is merely unwelcome may not.
     pub fn commit_draw(ctx: Context<CommitDraw>, round_id: u64) -> Result<()> {
         let clock = Clock::get()?;
         let round = &mut ctx.accounts.round;
         match round.status {
             RoundStatus::Open => {}
-            RoundStatus::Committed => require!(
-                clock.slot > round.commit_slot.saturating_add(REVEAL_TIMEOUT_SLOTS),
-                DrawError::RevealPending
-            ),
+            RoundStatus::Committed => {
+                require!(
+                    clock.slot > round.commit_slot.saturating_add(REVEAL_TIMEOUT_SLOTS),
+                    DrawError::RevealPending
+                );
+                let previous = ctx.remaining_accounts.first().ok_or(DrawError::BadRandomness)?;
+                require_keys_eq!(previous.key(), round.randomness, DrawError::BadRandomness);
+                require_keys_eq!(*previous.owner, orao_solana_vrf::ID, DrawError::BadRandomness);
+                let old = RandomnessAccountData::try_deserialize(&mut &previous.try_borrow_data()?[..])
+                    .map_err(|_| DrawError::BadRandomness)?;
+                require!(old.fulfilled_randomness().is_none(), DrawError::RandomnessReady);
+            }
             _ => return err!(DrawError::WrongStatus),
         }
         require!(clock.unix_timestamp >= round.draw_ts, DrawError::TooEarly);
-        let data = RandomnessAccountData::parse(ctx.accounts.randomness.try_borrow_data()?)
+        let data = RandomnessAccountData::try_deserialize(&mut &ctx.accounts.randomness.try_borrow_data()?[..])
             .map_err(|_| DrawError::BadRandomness)?;
-        require_keys_eq!(data.queue, ctx.accounts.config.sb_queue, DrawError::BadRandomness);
-        require!(data.seed_slot == clock.slot.saturating_sub(1), DrawError::StaleCommit);
+        require_keys_eq!(
+            ctx.accounts.randomness.key(),
+            orao_solana_vrf::randomness_account_address(&orao_solana_vrf::ID, data.seed()),
+            DrawError::BadRandomness
+        );
+        let untouched = data.fulfilled_randomness().is_none() && data.responses().map_or(false, |r| r.is_empty());
+        require!(untouched, DrawError::StaleCommit);
         round.randomness = ctx.accounts.randomness.key();
-        round.commit_slot = data.seed_slot;
+        round.commit_slot = clock.slot;
         round.status = RoundStatus::Committed;
         emit!(DrawCommitted { round: round_id, randomness: round.randomness });
         Ok(())
     }
 
-    /// Reads the revealed value in the same transaction as Switchboard's reveal
-    /// and turns it into the winning numbers. Anyone may call it. The value must
-    /// come from the commitment made at commit_draw: without the seed-slot check,
-    /// whoever cranks could reveal privately, re-commit the same account, and
-    /// repeat until the numbers favour their own ticket.
+    /// Turns the committed request's fulfilled randomness into the winning
+    /// numbers. Anyone may call it, as soon as ORAO has fulfilled the request.
+    /// Only the request bound at commit_draw is accepted, and it cannot be
+    /// replaced once fulfilled, so whoever cranks cannot re-roll.
     pub fn reveal_draw(ctx: Context<RevealDraw>, round_id: u64) -> Result<()> {
-        let clock = Clock::get()?;
         let round = &mut ctx.accounts.round;
         require!(round.status == RoundStatus::Committed, DrawError::WrongStatus);
         require_keys_eq!(ctx.accounts.randomness.key(), round.randomness, DrawError::BadRandomness);
-        let data = RandomnessAccountData::parse(ctx.accounts.randomness.try_borrow_data()?)
+        let data = RandomnessAccountData::try_deserialize(&mut &ctx.accounts.randomness.try_borrow_data()?[..])
             .map_err(|_| DrawError::BadRandomness)?;
-        require!(data.seed_slot == round.commit_slot, DrawError::RandomnessExpired);
-        let value = data.get_value(clock.slot).map_err(|_| DrawError::NotRevealed)?;
+        let full = data.fulfilled_randomness().ok_or(DrawError::NotRevealed)?;
+        let mut value = [0u8; 32];
+        value.copy_from_slice(&full[..32]);
         round.winning = draw_five(&value);
         round.status = RoundStatus::Revealed;
         emit!(DrawRevealed { round: round_id, winning: round.winning, tickets: round.tickets, pot: round.pot });
@@ -312,6 +328,7 @@ pub struct InitParams {
     pub per_ticket_bonus: u64,
     pub require_sgt: bool,
     pub sgt_group: Pubkey,
+    /// Legacy (Switchboard): stored but no longer read; randomness comes from ORAO VRF.
     pub sb_program: Pubkey,
     pub sb_queue: Pubkey,
 }
@@ -330,6 +347,7 @@ pub struct Config {
     pub carry: u64,
     pub require_sgt: bool,
     pub sgt_group: Pubkey,
+    /// Legacy (Switchboard). Unused since randomness moved to ORAO VRF; kept for the account layout.
     pub sb_program: Pubkey,
     pub sb_queue: Pubkey,
     pub bump: u8,
@@ -481,8 +499,8 @@ pub struct CommitDraw<'info> {
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
     pub round: Account<'info, Round>,
-    /// CHECK: owner pinned to the configured Switchboard program; contents parsed in the handler.
-    #[account(owner = config.sb_program)]
+    /// CHECK: an ORAO VRF request account, owner pinned; its address and contents are checked in the handler.
+    #[account(owner = orao_solana_vrf::ID)]
     pub randomness: UncheckedAccount<'info>,
 }
 
@@ -493,8 +511,8 @@ pub struct RevealDraw<'info> {
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [b"round", round_id.to_le_bytes().as_ref()], bump = round.bump)]
     pub round: Account<'info, Round>,
-    /// CHECK: must be the account the round committed to, owned by Switchboard.
-    #[account(owner = config.sb_program)]
+    /// CHECK: must be the ORAO VRF request the round committed to.
+    #[account(owner = orao_solana_vrf::ID)]
     pub randomness: UncheckedAccount<'info>,
 }
 
@@ -631,11 +649,11 @@ pub enum DrawError {
     WrongStatus,
     #[msg("The draw time has not come yet")]
     TooEarly,
-    #[msg("Randomness account is not the expected Switchboard account")]
+    #[msg("Randomness account is not the expected ORAO VRF request")]
     BadRandomness,
-    #[msg("Randomness must be committed in the same transaction")]
+    #[msg("The randomness request must be new and unanswered when committed")]
     StaleCommit,
-    #[msg("Randomness is not revealed in this slot")]
+    #[msg("The randomness is not fulfilled yet")]
     NotRevealed,
     #[msg("Ticket does not belong to this round")]
     BadTicket,
@@ -657,4 +675,6 @@ pub enum DrawError {
     NotUpgradeAuthority,
     #[msg("Only the admin can change the schedule")]
     NotAdmin,
+    #[msg("The committed randomness is fulfilled: reveal it instead")]
+    RandomnessReady,
 }

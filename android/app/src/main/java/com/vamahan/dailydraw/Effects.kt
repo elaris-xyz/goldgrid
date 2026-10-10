@@ -266,7 +266,7 @@ fun WelcomeScreen(connectedAs: String?, onConnect: () -> Unit, onContinue: () ->
             Spacer(Modifier.height(30.dp))
             Column(Modifier.widthIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Arrive(2_250) { Feature("◎", "Free to play", "A new round every five minutes. Sponsors fill the pot — you never pay to enter.") }
-                Arrive(2_450) { Feature("◈", "Provably fair", "Switchboard randomness on Solana picks the numbers. Nobody can choose them, not even us.") }
+                Arrive(2_450) { Feature("◈", "Provably fair", "ORAO VRF randomness on Solana picks the numbers. Nobody can choose them, not even us.") }
                 Arrive(2_650) { Feature("◆", "Paid automatically", "Win and the prize lands in your wallet by itself. Nothing to claim.") }
             }
             Spacer(Modifier.height(34.dp))

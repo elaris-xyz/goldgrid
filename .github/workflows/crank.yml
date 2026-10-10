@@ -9,8 +9,8 @@
 # the job's own token is one of the two events such a token may start. The
 # hourly schedule stays as a backup that restarts a broken chain.
 #
-# Repository secrets: CRANK_SECRET (the fee-only crank key), RANDOMNESS_SECRET
-# (its Switchboard randomness account) and RPC_URL (a devnet RPC endpoint).
+# Repository secrets: CRANK_SECRET (the fee-only crank key) and RPC_URL (a devnet
+# RPC endpoint). RANDOMNESS_SECRET belonged to Switchboard and is no longer read.
 name: draw-crank
 run-name: draw crank
 on:
