@@ -3,7 +3,7 @@
 // It runs on GitHub Actions (.github/workflows/crank.yml) and may run anywhere else too.
 // Loops until stopped; `--once` does a
 // single pass.
-import { chainNow, connect, crankRound, keypairFromJson, loadKeypair, log } from "./lib.mjs";
+import { chainNow, connect, crankRound, keypairFromJson, loadKeypair, log, oracleHealth, switchboardProgram } from "./lib.mjs";
 
 // CI passes the crank's own key as a secret; locally it is a file. Never the
 // program's upgrade authority: a crank key only pays fees and can do nothing else.
@@ -16,8 +16,26 @@ const once = process.argv.includes("--once");
 // and the next queued run takes over.
 const stopAt = Date.now() + 1000 * Number(process.argv.find((a) => a.startsWith("--for="))?.slice(6) ?? Infinity);
 
+// Below this the crank stops committing (a commit and its reveal cost about
+// 0.006 SOL) and the run ends red, so GitHub tells the owner to top it up.
+const LOW_SOL = 0.05e9;
+let lowSol = false;
+let lastOracleNote = 0;
+
 async function pass() {
   const now = await chainNow(connection);
+  const balance = await connection.getBalance(payer.publicKey);
+  if (balance < LOW_SOL) {
+    if (!lowSol) log(`CRANK IS OUT OF SOL: ${balance / 1e9} SOL on ${payer.publicKey.toBase58()}; draws are paused until it is funded`);
+    lowSol = true;
+  } else lowSol = false;
+  const health = await oracleHealth(program, await switchboardProgram());
+  if (health.live === 0 && Date.now() - lastOracleNote > 600_000) {
+    lastOracleNote = Date.now();
+    log(`Switchboard has no live oracle (${health.oracles} on the queue, freshest heartbeat ${Math.round(health.freshestHeartbeatSecs / 60)} min ago); draws wait without spending`);
+  }
+  // Out of SOL: only the free work (scoring and payouts need fees too, so nothing).
+  if (lowSol) return;
   // Every Round account, not a window of recent ids: a round the crank missed
   // while it was down still holds a pot and tickets waiting for a result.
   const rounds = await program.account.round.all();
@@ -32,7 +50,7 @@ async function pass() {
     const id = r.id.toNumber();
     try {
       log(`round ${id}: ${r.tickets} tickets, status ${Object.keys(r.status)[0]}`);
-      const done = await crankRound(program, payer, id);
+      const done = await crankRound(program, payer, id, { health });
       if ("settled" in done.status) log(`round ${id}: winning ${done.winning.join(" ")}, best ${done.best}, winners ${done.winners}`);
     } catch (e) {
       log(`round ${id} failed: ${(e.message ?? String(e)).slice(0, 200)}`);
@@ -49,4 +67,9 @@ for (;;) {
   }
   if (once || Date.now() >= stopAt) break;
   await new Promise((r) => setTimeout(r, 10_000));
+}
+// A red run is the alarm: GitHub emails the repository owner about a failed workflow.
+if (lowSol) {
+  log("ending red: the crank key needs SOL");
+  process.exitCode = 1;
 }

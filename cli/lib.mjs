@@ -127,6 +127,36 @@ export async function switchboardProgram() {
 }
 
 /**
+ * Whether the queue has an oracle that can serve randomness now, read from chain:
+ * an oracle counts only while its last heartbeat is within the queue's node
+ * timeout. With none, a commit can never be revealed, so the crank must wait
+ * instead of spending. On 2026-10-10 every devnet oracle went silent for hours
+ * and the crank paid for a fresh randomness account every 40 s until it was empty.
+ */
+export async function oracleHealth(program, sbProgram) {
+  const config = await program.account.config.fetch(configPda());
+  const q = await new sb.Queue(sbProgram, config.sbQueue).loadData();
+  const now = await chainNow(program.provider.connection);
+  const keys = q.oracleKeys.slice(0, q.oracleKeysLen).filter((k) => !k.equals(PublicKey.default));
+  let live = 0;
+  let freshest = Infinity;
+  for (const key of keys) {
+    try {
+      const o = await new sb.Oracle(sbProgram, key).loadData();
+      const age = now - Number(o.lastHeartbeat);
+      freshest = Math.min(freshest, age);
+      if (age <= Number(q.nodeTimeout)) live++;
+    } catch {
+      // An unreadable oracle cannot serve a draw either.
+    }
+  }
+  return { live, oracles: keys.length, freshestHeartbeatSecs: freshest };
+}
+
+/** At most one fresh randomness account per crank process, reused on every later pass. */
+let freshRandomness = null;
+
+/**
  * The cranker's randomness account, created once and re-committed every round:
  * a new account per draw leaks its rent every time. Kept in a local keypair
  * file; `fresh` makes a new one when Switchboard refuses to re-commit the old.
@@ -138,13 +168,18 @@ export async function crankerRandomness(program, payer, sbProgram, { fresh = fal
   const config = await program.account.config.fetch(configPda());
   // In CI there is no file to keep it in: the keypair comes from a secret.
   const fromEnv = process.env.RANDOMNESS_SECRET;
-  let kp = fresh ? null : fromEnv ? keypairFromJson(fromEnv) : fs.existsSync(file) ? loadKeypair(file) : null;
+  // A fresh account made earlier in this process is reused, never replaced: in CI
+  // the secret always names the original account, so without this every pass
+  // would buy another one.
+  if (fresh && freshRandomness) return { kp: freshRandomness, randomness: new sb.Randomness(sbProgram, freshRandomness.publicKey) };
+  let kp = fresh ? null : (freshRandomness ?? (fromEnv ? keypairFromJson(fromEnv) : fs.existsSync(file) ? loadKeypair(file) : null));
   if (kp && (await program.provider.connection.getAccountInfo(kp.publicKey))) {
     return { kp, randomness: new sb.Randomness(sbProgram, kp.publicKey) };
   }
   kp = kp && !fresh ? kp : Keypair.generate();
   const [randomness, createIx] = await sb.Randomness.create(sbProgram, kp, config.sbQueue, payer.publicKey);
   await send(program.provider.connection, [createIx], [payer, kp], "randomness account created");
+  if (fresh) freshRandomness = kp;
   if (!fromEnv || fresh) fs.writeFileSync(file, JSON.stringify([...kp.secretKey]));
   return { kp, randomness };
 }
@@ -220,9 +255,14 @@ export async function payoutRound(program, payer, id, round) {
   return program.account.round.fetch(roundPda(id));
 }
 
-export async function crankRound(program, payer, id, { payout = true, keepSecs = ROUND_KEEP_SECS } = {}) {
+export async function crankRound(program, payer, id, { payout = true, keepSecs = ROUND_KEEP_SECS, health = null } = {}) {
   const connection = program.provider.connection;
   let round = await program.account.round.fetch(roundPda(id));
+
+  // No live oracle: a commit could never be revealed, so nothing is spent until one is back.
+  if (health && health.live === 0 && ("open" in round.status || "committed" in round.status)) {
+    return round;
+  }
 
   if ("open" in round.status) {
     try {
