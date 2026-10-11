@@ -20,6 +20,7 @@ import com.vamahan.dailydraw.draw.DrawProgram
 import com.vamahan.dailydraw.draw.DrawRound
 import com.vamahan.dailydraw.draw.DrawTicket
 import com.vamahan.dailydraw.draw.MessageCompiler
+import com.vamahan.dailydraw.draw.RoundHistory
 import com.vamahan.dailydraw.draw.RoundStatus
 import com.vamahan.dailydraw.draw.SeekerState
 import com.vamahan.dailydraw.draw.Sgt
@@ -281,6 +282,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
 
         val onChain = live.map { (slot, t) -> MyResult.of(t, slot.second, rounds[t.round], now, config.drawTs(t.round)) }
         merge(owner, onChain, watchedFrom, rounds, goneOlder, seeker = seeker, skr = skr)
+        recoverFromHistory(owner, now)
         if (fullClock || _state.value.lamports == null || (_state.value.lamports ?: 0) < LOW_SOL_LAMPORTS) {
             val lamports = rpc.lamports(owner)
             _state.update { it.copy(lamports = lamports) }
@@ -322,6 +324,53 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         }.map { it.key }
         if (results != _state.value.results) store.save(owner, results)
         _state.update { it.copy(results = results, seeker = seeker, skr = skr, freshlyDrawn = it.freshlyDrawn + fresh) }
+    }
+
+    /** When each stranded result was last looked up in history (monotonic ms). */
+    private val historyTried = HashMap<String, Long>()
+
+    /**
+     * Results still "drawing" well after their draw time, looked up in the round's
+     * transaction history: once the crank has paid and the round is closed, the
+     * accounts are gone and only the program's events still say what happened.
+     * A couple per poll, each retried every few minutes at most.
+     */
+    private suspend fun recoverFromHistory(owner: String, now: Long) {
+        val clock = android.os.SystemClock.elapsedRealtime()
+        val stranded = _state.value.results.filter {
+            (it.outcome == Outcome.Waiting || it.outcome == Outcome.Drawing) &&
+                it.drawTs > 0 && now > it.drawTs + HISTORY_AFTER_SECS &&
+                clock - (historyTried[it.key] ?: -HISTORY_RETRY_MS) >= HISTORY_RETRY_MS
+        }.take(HISTORY_PER_POLL)
+        if (stranded.isEmpty()) return
+        val found = HashMap<String, MyResult>()
+        for (r in stranded) {
+            historyTried[r.key] = clock
+            val signatures = runCatching { rpc.signaturesFor(DrawProgram.round(r.round).base58(), 25) }.getOrNull() ?: continue
+            val logs = ArrayList<List<String>>()
+            var outcome: com.vamahan.dailydraw.draw.RoundOutcome? = null
+            for (sig in signatures) {
+                logs += runCatching { rpc.transactionLogs(sig) }.getOrNull() ?: continue
+                outcome = RoundHistory.outcome(r.round, logs)
+                if (outcome != null) break
+            }
+            val o = outcome ?: continue
+            val matches = r.picks.count { it in o.winning }
+            val won = o.best > 0 && matches == o.best
+            found[r.key] = r.copy(
+                outcome = when {
+                    won && r.ticket != null -> Outcome.Won
+                    won -> Outcome.Claimed
+                    matches > 0 -> Outcome.Matched
+                    else -> Outcome.NoMatch
+                },
+                winning = o.winning, matches = matches, best = o.best, prize = if (won) o.share else 0,
+            )
+        }
+        if (found.isEmpty()) return
+        val results = _state.value.results.map { found[it.key] ?: it }
+        store.save(owner, results)
+        _state.update { it.copy(results = results) }
     }
 
     /** SPL token accounts (classic and Token-2022) keep the amount at byte 64. */
@@ -648,6 +697,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         const val WALLET_GRACE_MS = 6_000L
         /** Older remembered tickets checked per poll; with the watched ones it stays in one call. */
         const val MAX_OLD_CHECKS = 40
+        /** A result still drawing this long after its draw time is looked up in history. */
+        const val HISTORY_AFTER_SECS = 300L
+        const val HISTORY_RETRY_MS = 180_000L
+        const val HISTORY_PER_POLL = 2
         /** The crank needs a minute or two after draw time: commit, oracle reveal, scoring. */
         const val RESULT_SLACK_MS = 120_000L
         const val AIRDROP_LAMPORTS = 500_000_000L

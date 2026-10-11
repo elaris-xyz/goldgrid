@@ -148,6 +148,25 @@ class SolanaRpc(private val url: String) {
         return result.jsonObject["value"]!!.jsonArray.map { decode(it) }
     }
 
+    /** Up to `limit` newest transaction signatures that touched `address`, closed accounts included. */
+    suspend fun signaturesFor(address: String, limit: Int): List<String> {
+        val result = call("getSignaturesForAddress", buildJsonArray {
+            add(address)
+            add(buildJsonObject { put("limit", limit); put("commitment", "confirmed") })
+        })
+        return result.jsonArray.mapNotNull { it.jsonObject["signature"]?.jsonPrimitive?.content }
+    }
+
+    /** A transaction's log lines (where Anchor events are written), or empty if unknown. */
+    suspend fun transactionLogs(signature: String): List<String> {
+        val result = call("getTransaction", buildJsonArray {
+            add(signature)
+            add(buildJsonObject { put("encoding", "json"); put("commitment", "confirmed"); put("maxSupportedTransactionVersion", 0) })
+        })
+        if (result is JsonNull) return emptyList()
+        return result.jsonObject["meta"]?.jsonObject?.get("logMessages")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+    }
+
     /** A recent blockhash and the slot the node answered at (a wallet's minContextSlot). */
     suspend fun latestBlockhash(): Pair<String, Long> {
         val result = call("getLatestBlockhash", buildJsonArray { add(buildJsonObject { put("commitment", "confirmed") }) })
