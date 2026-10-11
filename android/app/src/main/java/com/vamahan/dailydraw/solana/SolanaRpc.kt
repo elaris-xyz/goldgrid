@@ -29,6 +29,9 @@ import java.util.concurrent.TimeUnit
 /** The few JSON-RPC calls the app needs, with the account data already decoded. */
 private class RateLimited : Exception()
 
+/** How far below the highest slot seen a read may answer from (about a minute). */
+private const val SLOT_SLACK = 150L
+
 class SolanaRpc(private val url: String) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -86,16 +89,34 @@ class SolanaRpc(private val url: String) {
         return Base64.decode(data, Base64.DEFAULT)
     }
 
-    private val base64Config = buildJsonObject { put("encoding", "base64"); put("commitment", "confirmed") }
+    /**
+     * The highest slot any answer has come from. Reads ask for at least a little
+     * below it (minContextSlot), so a node that has fallen behind refuses instead
+     * of handing back old accounts and an old clock.
+     */
+    @Volatile private var highestSlot = 0L
+
+    private fun base64Config() = buildJsonObject {
+        put("encoding", "base64")
+        put("commitment", "confirmed")
+        if (highestSlot > SLOT_SLACK) put("minContextSlot", highestSlot - SLOT_SLACK)
+    }
+
+    private fun seen(result: JsonElement) {
+        val slot = (result as? JsonObject)?.get("context")?.jsonObject?.get("slot")?.jsonPrimitive?.content?.toLongOrNull() ?: return
+        if (slot > highestSlot) highestSlot = slot
+    }
 
     suspend fun accountData(address: String): ByteArray? {
-        val result = call("getAccountInfo", buildJsonArray { add(address); add(base64Config) })
+        val result = call("getAccountInfo", buildJsonArray { add(address); add(base64Config()) })
+        seen(result)
         return decode(result.jsonObject["value"] ?: JsonNull)
     }
 
     /** The program that owns an account (for a mint: the token program it runs under). */
     suspend fun accountOwner(address: String): String? {
-        val result = call("getAccountInfo", buildJsonArray { add(address); add(base64Config) })
+        val result = call("getAccountInfo", buildJsonArray { add(address); add(base64Config()) })
+        seen(result)
         val value = result.jsonObject["value"] ?: return null
         if (value is JsonNull) return null
         return value.jsonObject["owner"]?.jsonPrimitive?.content
@@ -121,8 +142,9 @@ class SolanaRpc(private val url: String) {
         if (addresses.isEmpty()) return emptyList()
         val result = call("getMultipleAccounts", buildJsonArray {
             add(buildJsonArray { addresses.forEach { add(it) } })
-            add(base64Config)
+            add(base64Config())
         })
+        seen(result)
         return result.jsonObject["value"]!!.jsonArray.map { decode(it) }
     }
 

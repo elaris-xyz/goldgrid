@@ -149,7 +149,7 @@ class MainActivity : ComponentActivity() {
 fun DrawScreen(vm: DrawViewModel, sender: ActivityResultSender) {
     val s by vm.state.collectAsStateWithLifecycle()
     var now by remember { mutableLongStateOf(s.chainNow()) }
-    LaunchedEffect(s.clockOffset) {
+    LaunchedEffect(s.clockOffset, s.chainAnchor, s.monoAnchor) {
         while (true) {
             now = s.chainNow()
             delay(250)

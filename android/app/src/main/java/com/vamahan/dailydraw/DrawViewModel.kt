@@ -56,8 +56,16 @@ data class UiState(
     val wallet: String? = null,
     val identity: Identity? = null,
     val skr: Long? = null,
-    /** chain time minus device time, so countdowns follow the program's clock. */
+    /** chain time minus device wall time, for alarms (which run on the wall clock). */
     val clockOffset: Long = 0,
+    /**
+     * The chain clock as last read, and the device's monotonic clock at that moment.
+     * Countdowns run from these, not from the wall clock: a phone's wall clock jumps
+     * (network time, a time zone, a VPN toggling), and with a wall-clock offset one
+     * jump made the timer read "Draw in 197:03" for a round that had been drawn.
+     */
+    val chainAnchor: Long = 0,
+    val monoAnchor: Long = 0,
     val config: DrawConfig? = null,
     /** The RPC answered but the program's config account is not there. */
     val programMissing: Boolean = false,
@@ -85,7 +93,9 @@ data class UiState(
     /** The wallet's SOL, which pays each ticket's refundable deposit and the fee. */
     val lamports: Long? = null,
 ) {
-    fun chainNow() = System.currentTimeMillis() / 1000 + clockOffset
+    fun chainNow() =
+        if (monoAnchor > 0) chainAnchor + (android.os.SystemClock.elapsedRealtime() - monoAnchor) / 1000
+        else System.currentTimeMillis() / 1000 + clockOffset
     fun ticketsLeft(): Int {
         val s = seeker ?: return 1
         val (used, allowed) = s.ticketsAllowedIn(roundId)
@@ -144,7 +154,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             var failures = 0
             while (isActive) {
                 val wait = try {
-                    refresh(fullClock = tick % 12 == 0)
+                    refresh(fullClock = tick % 12 == 0 || _state.value.monoAnchor == 0L)
                     failures = 0
                     _state.update { it.copy(networkTrouble = false) }
                     POLL_MS
@@ -189,9 +199,18 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun refresh(fullClock: Boolean) {
         if (fullClock) {
             val chain = rpc.chainTime()
-            val offset = chain - System.currentTimeMillis() / 1000
-            session.clockOffset = offset
-            _state.update { it.copy(clockOffset = offset) }
+            val current = _state.value
+            // The chain clock never runs backwards. A reading well behind the running
+            // estimate came from a node that has fallen behind: keep the estimate.
+            if (current.monoAnchor > 0 && chain < current.chainNow() - CLOCK_BACKWARDS_SECS) {
+                Log.w(TAG, "ignored a chain clock ${current.chainNow() - chain} s behind the running estimate")
+            } else {
+                val offset = chain - System.currentTimeMillis() / 1000
+                session.clockOffset = offset
+                _state.update {
+                    it.copy(clockOffset = offset, chainAnchor = chain, monoAnchor = android.os.SystemClock.elapsedRealtime())
+                }
+            }
         }
         val known = _state.value.config ?: run {
             val raw = rpc.accountData(DrawProgram.config().base58())
@@ -623,6 +642,8 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "DailyDraw"
         const val POLL_MS = 5_000L
+        /** A chain clock reading this far behind the running estimate is a stale node, not time. */
+        const val CLOCK_BACKWARDS_SECS = 20L
         /** After coming back from the wallet, how long a real answer may take to arrive. */
         const val WALLET_GRACE_MS = 6_000L
         /** Older remembered tickets checked per poll; with the watched ones it stays in one call. */
