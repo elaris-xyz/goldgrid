@@ -94,12 +94,24 @@ data class UiState(
     /** The wallet's SOL, which pays each ticket's refundable deposit and the fee. */
     val lamports: Long? = null,
 ) {
-    fun chainNow() =
-        if (monoAnchor > 0) chainAnchor + (android.os.SystemClock.elapsedRealtime() - monoAnchor) / 1000
-        else System.currentTimeMillis() / 1000 + clockOffset
+    fun chainNow() = ChainTime.now(
+        chainAnchor, monoAnchor, clockOffset,
+        wallSecs = System.currentTimeMillis() / 1000, monoMs = android.os.SystemClock.elapsedRealtime(),
+    )
+    /**
+     * The round open (or closing) now, from the chain clock this instant. The polled
+     * `roundId` lags by up to a poll (longer on a slow link): the timer showed a
+     * finished round at 00:00 after every boundary, and an entry right after one
+     * went to the round that had just closed.
+     */
+    fun liveRound(): Long = config?.roundAt(chainNow()) ?: roundId
+
+    /** The polled round account, only while it is the live round's. */
+    val liveRoundData: DrawRound? get() = round?.takeIf { it.id == liveRound() }
+
     fun ticketsLeft(): Int {
         val s = seeker ?: return 1
-        val (used, allowed) = s.ticketsAllowedIn(roundId)
+        val (used, allowed) = s.ticketsAllowedIn(liveRound())
         return (allowed - used).coerceAtLeast(0)
     }
     fun resultsIn(round: Long) = results.filter { it.round == round }
@@ -203,7 +215,7 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
             val current = _state.value
             // The chain clock never runs backwards. A reading well behind the running
             // estimate came from a node that has fallen behind: keep the estimate.
-            if (current.monoAnchor > 0 && chain < current.chainNow() - CLOCK_BACKWARDS_SECS) {
+            if (!ChainTime.accepts(chain, anchored = current.monoAnchor > 0, estimate = current.chainNow())) {
                 Log.w(TAG, "ignored a chain clock ${current.chainNow() - chain} s behind the running estimate")
             } else {
                 val offset = chain - System.currentTimeMillis() / 1000
@@ -498,13 +510,14 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         val identity = s.identity ?: return@launch
         val picks = s.selection.sorted()
         if (picks.size != DrawProgram.PICKS) return@launch
-        val index = s.seeker?.ticketsAllowedIn(s.roundId)?.first ?: 0
-        val label = s.config?.labelOf(s.roundId) ?: "this round"
+        val roundId = s.liveRound()
+        val index = s.seeker?.ticketsAllowedIn(roundId)?.first ?: 0
+        val label = s.config?.labelOf(roundId) ?: "this round"
         val ok = send(sender, "enter", "You're in round $label. Good luck!") {
             listOf(
                 DrawProgram.enter(
                     owner, SolanaPublicKey.from(identity.key), identity.sgtTokens?.let(SolanaPublicKey::from),
-                    s.roundId, index, picks,
+                    roundId, index, picks,
                 ),
             )
         }
@@ -512,10 +525,10 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
         if (ok) {
             _state.update { it.copy(selection = emptySet()) }
             val config = s.config ?: return@launch
-            val ticket = DrawProgram.ticket(s.roundId, SolanaPublicKey.from(identity.key), index).base58()
+            val ticket = DrawProgram.ticket(roundId, SolanaPublicKey.from(identity.key), index).base58()
             // Chain time to device time, then a little slack for the crank.
-            val at = (config.drawTs(s.roundId) - s.clockOffset) * 1000 + RESULT_SLACK_MS
-            ResultAlarm.schedule(getApplication(), s.roundId, index, ticket, picks, at)
+            val at = (config.drawTs(roundId) - s.clockOffset) * 1000 + RESULT_SLACK_MS
+            ResultAlarm.schedule(getApplication(), roundId, index, ticket, picks, at)
         }
     }
 
@@ -691,8 +704,6 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "DailyDraw"
         const val POLL_MS = 5_000L
-        /** A chain clock reading this far behind the running estimate is a stale node, not time. */
-        const val CLOCK_BACKWARDS_SECS = 20L
         /** After coming back from the wallet, how long a real answer may take to arrive. */
         const val WALLET_GRACE_MS = 6_000L
         /** Older remembered tickets checked per poll; with the watched ones it stays in one call. */

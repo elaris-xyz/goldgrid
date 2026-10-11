@@ -1,6 +1,6 @@
 package com.vamahan.dailydraw.draw
 
-import android.util.Base64
+import java.util.Base64
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -27,7 +27,7 @@ object RoundHistory {
         var settled: Triple<Int, Long, Long>? = null
         for (line in logs.flatten()) {
             if (!line.startsWith("Program data: ")) continue
-            val data = runCatching { Base64.decode(line.removePrefix("Program data: "), Base64.DEFAULT) }.getOrNull() ?: continue
+            val data = runCatching { Base64.getDecoder().decode(line.removePrefix("Program data: ")) }.getOrNull() ?: continue
             if (data.size < 16) continue
             val head = data.copyOf(8)
             val buf = ByteBuffer.wrap(data, 8, data.size - 8).order(ByteOrder.LITTLE_ENDIAN)
