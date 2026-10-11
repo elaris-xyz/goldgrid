@@ -211,17 +211,27 @@ class DrawViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun refresh(fullClock: Boolean) {
         if (fullClock) {
+            val sent = android.os.SystemClock.elapsedRealtime()
             val chain = rpc.chainTime()
+            val received = android.os.SystemClock.elapsedRealtime()
             val current = _state.value
-            // The chain clock never runs backwards. A reading well behind the running
-            // estimate came from a node that has fallen behind: keep the estimate.
-            if (!ChainTime.accepts(chain, anchored = current.monoAnchor > 0, estimate = current.chainNow())) {
-                Log.w(TAG, "ignored a chain clock ${current.chainNow() - chain} s behind the running estimate")
-            } else {
-                val offset = chain - System.currentTimeMillis() / 1000
-                session.clockOffset = offset
-                _state.update {
-                    it.copy(clockOffset = offset, chainAnchor = chain, monoAnchor = android.os.SystemClock.elapsedRealtime())
+            val anchored = current.monoAnchor > 0
+            // The node read its clock somewhere between sending and receiving: pin the
+            // reading to the middle. On a slow link pinning it to the arrival left the
+            // countdown a whole round trip behind until the next read.
+            val at = sent + (received - sent) / 2
+            when {
+                // The chain clock never runs backwards: a reading well behind the
+                // running estimate came from a node that has fallen behind.
+                !ChainTime.accepts(chain, anchored, estimate = current.chainNow()) ->
+                    Log.w(TAG, "ignored a chain clock ${current.chainNow() - chain} s behind the running estimate")
+                // A reading that took this long says little; keep a good estimate.
+                anchored && received - sent > ChainTime.MAX_ROUND_TRIP_MS ->
+                    Log.w(TAG, "ignored a chain clock that took ${received - sent} ms")
+                else -> {
+                    val offset = chain - System.currentTimeMillis() / 1000 + (received - at) / 1000
+                    session.clockOffset = offset
+                    _state.update { it.copy(clockOffset = offset, chainAnchor = chain, monoAnchor = at) }
                 }
             }
         }

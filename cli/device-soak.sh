@@ -8,7 +8,7 @@ ADB=/e/Android/sdk/platform-tools/adb.exe
 PKG=com.vamahan.dailydraw
 launch() { $ADB shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1; }
 top() { for i in 1 2 3 4 5 6; do $ADB shell input swipe 876 700 876 2400 150; done; }
-step() { echo "== $1"; timeout 900 node timer-check.mjs "$2" --quiet 2>&1 | grep -v bigint | tail -1; }
+step() { echo "== $1"; timeout 900 node timer-check.mjs "$2" 2>&1 | grep -v bigint | tee -a /e/Android/soak-samples.log | tail -1; }
 
 $ADB shell input keyevent KEYCODE_WAKEUP
 $ADB shell am force-stop $PKG; launch; sleep 8; top

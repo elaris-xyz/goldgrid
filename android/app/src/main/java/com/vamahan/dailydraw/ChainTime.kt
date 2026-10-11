@@ -12,6 +12,9 @@ object ChainTime {
     /** A reading this far behind the running estimate is a node that fell behind, not time. */
     const val BACKWARDS_SECS = 20L
 
+    /** A clock read whose round trip took longer than this does not replace a good estimate. */
+    const val MAX_ROUND_TRIP_MS = 4_000L
+
     /**
      * The chain's time now. Anchored (a reading has been taken in this process):
      * the reading plus monotonic time since. Not yet: the wall clock plus the last

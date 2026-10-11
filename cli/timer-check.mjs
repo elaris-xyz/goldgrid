@@ -20,8 +20,9 @@ const dayNumber = (id) => {
 let worst = 0, timed = 0, badLabel = 0, delayed = 0, failures = 0;
 
 for (let i = 0; i < samples; i++) {
-  let xml;
+  let xml, before;
   try {
+    before = await chainNow(connection);
     execFileSync(ADB, ["shell", "uiautomator", "dump", "/sdcard/ui.xml"], { stdio: "ignore" });
     xml = execFileSync(ADB, ["exec-out", "cat", "/sdcard/ui.xml"]).toString();
   } catch {
@@ -47,14 +48,18 @@ for (let i = 0; i < samples; i++) {
   let note = "";
   if (timer && phase) {
     const [m, s] = timer.split(":").map(Number);
+    // The screen was captured somewhere between `before` and `now`: an answer
+    // anywhere in that window is right, so only the distance outside it counts.
+    const window = now - before;
     let d = m * 60 + s - expect;
+    if (d > 0) d = Math.max(0, d - window);
     // At a boundary the screen is read a second or two before the chain clock, so
     // the round that just drew may still show its last seconds: compare it with
     // that round's draw instead.
     if (m * 60 + s <= 6 && expect >= config.roundSecs.toNumber() - config.entrySecs.toNumber() + 240) d = m * 60 + s - (roundTimes(config, id - 1).draw - now);
     worst = Math.max(worst, Math.abs(d));
     timed++;
-    note = `shown ${timer} expected ${expect}s diff ${d}s`;
+    note = `shown ${timer} expected ${expect}s (read window ${window}s) error ${d}s`;
   }
   if (label) {
     const shownNo = Number(label.match(/#(\d+)/)[1]);
